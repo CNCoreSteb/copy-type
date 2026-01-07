@@ -54,6 +54,9 @@ pub struct AppConfig {
     /// 快捷键配置
     #[serde(default)]
     pub hotkey: HotkeyConfig,
+    /// 界面语言
+    #[serde(default = "default_language")]
+    pub language: String,
 }
 
 fn default_typing_delay() -> u64 {
@@ -62,6 +65,10 @@ fn default_typing_delay() -> u64 {
 
 fn default_typing_variance() -> u64 {
     0
+}
+
+fn default_language() -> String {
+    "zh-CN".to_string()
 }
 
 impl Default for AppConfig {
@@ -75,6 +82,7 @@ impl Default for AppConfig {
             typing_variance: default_typing_variance(),
             typing_variance_enabled: false,
             hotkey: HotkeyConfig::default(),
+            language: default_language(),
         }
     }
 }

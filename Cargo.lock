@@ -823,6 +823,7 @@ dependencies = [
  "rand",
  "serde",
  "serde_json",
+ "toml 0.8.2",
  "tray-icon",
  "windows 0.58.0",
  "winres",

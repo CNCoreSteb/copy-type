@@ -5,6 +5,7 @@
 mod app_config;
 mod hotkey_config;
 mod permissions;
+mod i18n;
 
 use app_config::{AppConfig, CloseAction};
 use arboard::Clipboard;
@@ -12,6 +13,7 @@ use eframe::egui;
 use enigo::{Enigo, Keyboard, Settings};
 use global_hotkey::{hotkey::HotKey, GlobalHotKeyEvent, GlobalHotKeyManager};
 use hotkey_config::{HotkeyConfig, KeyCode};
+use i18n::I18n;
 use log::{debug, error, info, warn};
 use permissions::{check_permissions, get_permission_fix_instructions, PermissionStatus};
 use rand::Rng;
@@ -57,22 +59,26 @@ struct SharedState {
     typing_variance_enabled: Arc<Mutex<bool>>,
     /// 当前快捷键 ID
     hotkey_id: Arc<Mutex<Option<u32>>>,
+    /// 语言资源
+    i18n: I18n,
 }
 
 impl SharedState {
-    fn new() -> Self {
+    fn new(i18n: I18n) -> Self {
+        let ready = i18n.t("status.ready");
         Self {
             clipboard_text: Arc::new(Mutex::new(String::new())),
             last_clipboard_text: Arc::new(Mutex::new(String::new())),
             is_typing: Arc::new(Mutex::new(false)),
             enabled: Arc::new(Mutex::new(true)),
-            status_message: Arc::new(Mutex::new("就绪".to_string())),
+            status_message: Arc::new(Mutex::new(ready)),
             request_exit: Arc::new(AtomicBool::new(false)),
             window_visible: Arc::new(AtomicBool::new(true)),
             typing_delay: Arc::new(Mutex::new(0)),
             typing_variance: Arc::new(Mutex::new(0)),
             typing_variance_enabled: Arc::new(Mutex::new(false)),
             hotkey_id: Arc::new(Mutex::new(None)),
+            i18n,
         }
     }
 
@@ -99,11 +105,18 @@ impl SharedState {
     fn is_typing(&self) -> bool {
         *self.is_typing.lock().unwrap()
     }
+    fn t(&self, key: &str) -> String {
+        self.i18n.t(key)
+    }
+
+    fn tr<'a>(&self, key: &str, args: &[(&str, &'a str)]) -> String {
+        self.i18n.tr(key, args)
+    }
     
     /// 执行模拟输入逻辑
     fn execute_typing(&self) {
         if !self.is_enabled() {
-            warn!("程序已禁用，忽略输入请求");
+            warn!("{}", self.t("log.request_ignored_disabled"));
             return;
         }
 
@@ -111,13 +124,13 @@ impl SharedState {
         {
             let mut typing = self.is_typing.lock().unwrap();
             if *typing {
-                warn!("正在输入中，忽略此次请求");
+                warn!("{}", self.t("log.request_ignored_typing"));
                 return;
             }
             *typing = true;
         }
 
-        self.set_status("正在输入...");
+        self.set_status(&self.t("status.typing"));
         let state = self.clone();
         let delay = *self.typing_delay.lock().unwrap();
         let variance = *self.typing_variance.lock().unwrap();
@@ -130,26 +143,37 @@ impl SharedState {
             let text = state.clipboard_text.lock().unwrap().clone();
 
             if text.is_empty() {
-                warn!("剪贴板为空，无法输入");
-                state.set_status("剪贴板为空");
+                warn!("{}", state.t("log.clipboard_empty"));
+                state.set_status(&state.t("status.clipboard_empty"));
                 *state.is_typing.lock().unwrap() = false;
                 return;
             }
 
+            let len_str = text.len().to_string();
+            let delay_str = delay.to_string();
+            let variance_str = variance.to_string();
+            let variance_enabled_str = variance_enabled.to_string();
+
             info!(
-                "开始模拟输入 ({} 字符, 延迟 {}ms, 偏差 {}ms, 启用偏差: {})",
-                text.len(),
-                delay,
-                variance,
-                variance_enabled
+                "{}",
+                state.tr(
+                    "log.input_start",
+                    &[
+                        ("len", len_str.as_str()),
+                        ("delay", delay_str.as_str()),
+                        ("variance", variance_str.as_str()),
+                        ("variance_enabled", variance_enabled_str.as_str())
+                    ]
+                )
             );
 
             let settings = Settings::default();
             let mut enigo = match Enigo::new(&settings) {
                 Ok(e) => e,
                 Err(e) => {
-                    error!("无法初始化键盘模拟: {}", e);
-                    state.set_status(&format!("键盘模拟失败: {}", e));
+                    let err = e.to_string();
+                    error!("{}", state.tr("log.input_init_error", &[("err", err.as_str())]));
+                    state.set_status(&state.tr("status.input_init_error", &[("err", err.as_str())]));
                     *state.is_typing.lock().unwrap() = false;
                     return;
                 }
@@ -183,11 +207,12 @@ impl SharedState {
             };
 
             if let Err(e) = result {
-                error!("输入文本失败: {}", e);
-                state.set_status(&format!("输入失败: {}", e));
+                let err = e.to_string();
+                error!("{}", state.tr("log.input_error", &[("err", err.as_str())]));
+                state.set_status(&state.tr("status.input_error", &[("err", err.as_str())]));
             } else {
-                info!("输入完成");
-                state.set_status("输入完成");
+                info!("{}", state.t("log.input_complete"));
+                state.set_status(&state.t("status.input_complete"));
             }
 
             *state.is_typing.lock().unwrap() = false;
@@ -199,6 +224,8 @@ impl SharedState {
 struct CopyTypeApp {
     /// 共享状态
     state: SharedState,
+    /// 国际化
+    i18n: I18n,
     /// 快捷键管理器
     hotkey_manager: Option<GlobalHotKeyManager>,
     /// 当前快捷键 ID
@@ -245,20 +272,22 @@ impl CopyTypeApp {
         // 设置中文字体
         setup_fonts(&cc.egui_ctx);
 
-        // 检查权限
-        let permission_status = check_permissions();
-        let show_permission_warning = !permission_status.all_granted();
-
-        if show_permission_warning {
-            warn!("权限检查发现问题: {:?}", permission_status.issues);
-        }
-
         // 加载配置（统一从 AppConfig 加载）
         let app_config = AppConfig::load();
         let hotkey_config = app_config.hotkey.clone();
+        let i18n = I18n::new(&app_config.language);
+
+        // 检查权限
+        let permission_status = check_permissions(&i18n);
+        let show_permission_warning = !permission_status.all_granted();
+
+        if show_permission_warning {
+            let issues = permission_status.issues.join(", ");
+            warn!("{}", i18n.tr("log.permission_issue", &[("issues", issues.as_str())]));
+        }
 
         // 创建共享状态
-        let state = SharedState::new();
+        let state = SharedState::new(i18n.clone());
         // 初始化 state 中的配置值
         *state.typing_delay.lock().unwrap() = app_config.typing_delay;
         *state.typing_variance.lock().unwrap() = app_config.typing_variance;
@@ -275,9 +304,10 @@ impl CopyTypeApp {
         }
 
         // 创建系统托盘，并保存上下文
-        let tray_context = create_tray_context();
+        let tray_context = create_tray_context(&i18n);
         
         let ctx_clone = cc.egui_ctx.clone();
+        let i18n_tray = i18n.clone();
         let _state_enabled_clone = Arc::new(Mutex::new(app_config.auto_start)); // 这里只是暂时的占位，真正的状态在 SharedState::new 中
 
         // 启动独立的托盘事件监控线程
@@ -288,11 +318,11 @@ impl CopyTypeApp {
                  // 使用阻塞式 recv()，这样一有事件就会立即响应
                  if let Ok(event) = receiver.recv() {
                     let id_str = event.id.0.as_str();
-                    info!("后台线程: 收到托盘事件 {}", id_str);
+                    info!("{}", i18n_tray.tr("log.tray_event", &[("id", id_str)]));
                     
                     match id_str {
                         MENU_EXIT => {
-                            info!("Backgrond: EXIT command received. Terminating process immediately.");
+                            info!("{}", i18n_tray.t("log.tray_exec_exit"));
                             // 强制退出，不等待任何UI更新
                             std::process::exit(0);
                         }
@@ -317,6 +347,7 @@ impl CopyTypeApp {
         // 启动独立的快捷键事件监控线程
         // 这解决了窗口隐藏/最小化时快捷键不响应的问题
         let hotkey_state = state.clone();
+        let i18n_hotkey = i18n.clone();
         std::thread::spawn(move || {
             let receiver = GlobalHotKeyEvent::receiver();
             loop {
@@ -324,7 +355,7 @@ impl CopyTypeApp {
                     let current_id = *hotkey_state.hotkey_id.lock().unwrap();
                     if let Some(id) = current_id {
                         if event.id == id {
-                            info!("后台线程: 检测到快捷键触发");
+                            info!("{}", i18n_hotkey.t("log.hotkey_triggered"));
                             hotkey_state.execute_typing();
                         }
                     }
@@ -334,6 +365,7 @@ impl CopyTypeApp {
 
         let mut app = Self {
             state,
+            i18n: i18n.clone(),
             hotkey_manager: None,
             current_hotkey_id: None,
             current_hotkey: None,
@@ -376,24 +408,48 @@ impl CopyTypeApp {
                             self.current_hotkey_id = Some(hotkey.id());
                             self.current_hotkey = Some(hotkey);
                             *self.state.hotkey_id.lock().unwrap() = Some(hotkey.id());
-                            info!("已注册快捷键: {}", self.hotkey_config.display());
-                            self.state.set_status(&format!(
-                                "快捷键已注册: {}",
-                                self.hotkey_config.display()
-                            ));
+                            let display = self.hotkey_config.display();
+                            info!(
+                                "{}",
+                                self.i18n
+                                    .tr("log.hotkey_registered", &[("hotkey", display.as_str())])
+                            );
+                            self.state.set_status(
+                                &self
+                                    .i18n
+                                    .tr("status.hotkey_registered", &[("hotkey", display.as_str())]),
+                            );
                         }
                         Err(e) => {
-                            error!("注册快捷键失败: {}", e);
-                            self.state.set_status(&format!("快捷键注册失败: {}", e));
+                            let err = e.to_string();
+                            error!(
+                                "{}",
+                                self.i18n
+                                    .tr("log.hotkey_register_fail", &[("err", err.as_str())])
+                            );
+                            self.state.set_status(
+                                &self
+                                    .i18n
+                                    .tr("status.hotkey_register_fail", &[("err", err.as_str())]),
+                            );
                         }
                     }
                 }
                 self.hotkey_manager = Some(manager);
             }
             Err(e) => {
-                error!("初始化快捷键管理器失败: {}", e);
+                let err = e.to_string();
+                error!(
+                    "{}",
+                    self.i18n
+                        .tr("log.hotkey_manager_fail", &[("err", err.as_str())])
+                );
                 self.state
-                    .set_status(&format!("快捷键管理器初始化失败: {}", e));
+                    .set_status(
+                        &self
+                            .i18n
+                            .tr("status.hotkey_manager_fail", &[("err", err.as_str())]),
+                    );
             }
         }
     }
@@ -403,9 +459,14 @@ impl CopyTypeApp {
         // 先注销旧的快捷键
         if let (Some(manager), Some(old_hotkey)) = (&self.hotkey_manager, self.current_hotkey) {
             if let Err(e) = manager.unregister(old_hotkey) {
-                warn!("注销旧快捷键失败: {}", e);
+                let err = e.to_string();
+                warn!(
+                    "{}",
+                    self.i18n
+                        .tr("log.hotkey_unregister_fail", &[("err", err.as_str())])
+                );
             } else {
-                info!("已注销旧快捷键");
+                info!("{}", self.i18n.t("log.hotkey_unregistered"));
             }
             self.current_hotkey_id = None;
             self.current_hotkey = None;
@@ -423,19 +484,41 @@ impl CopyTypeApp {
                         self.current_hotkey_id = Some(new_hotkey.id());
                         self.current_hotkey = Some(new_hotkey);
                         *self.state.hotkey_id.lock().unwrap() = Some(new_hotkey.id());
-                        info!("已注册新快捷键: {}", self.hotkey_config.display());
-                        self.state
-                            .set_status(&format!("快捷键已更新: {}", self.hotkey_config.display()));
+                        let display = self.hotkey_config.display();
+                        info!(
+                            "{}",
+                            self.i18n
+                                .tr("log.hotkey_updated", &[("hotkey", display.as_str())])
+                        );
+                        self.state.set_status(
+                            &self
+                                .i18n
+                                .tr("status.hotkey_updated", &[("hotkey", display.as_str())]),
+                        );
 
                         // 保存配置（更新 app_config.hotkey 并保存）
                         self.app_config.hotkey = self.hotkey_config.clone();
                         if let Err(e) = self.app_config.save() {
-                            error!("保存配置失败: {}", e);
+                            let err = e.to_string();
+                            error!(
+                                "{}",
+                                self.i18n
+                                    .tr("log.save_config_fail", &[("err", err.as_str())])
+                            );
                         }
                     }
                     Err(e) => {
-                        error!("注册新快捷键失败: {}", e);
-                        self.state.set_status(&format!("快捷键注册失败: {}", e));
+                        let err = e.to_string();
+                        error!(
+                            "{}",
+                            self.i18n
+                                .tr("log.hotkey_register_fail", &[("err", err.as_str())])
+                        );
+                        self.state.set_status(
+                            &self
+                                .i18n
+                                .tr("status.hotkey_register_fail", &[("err", err.as_str())]),
+                        );
                     }
                 }
             }
@@ -450,13 +533,14 @@ impl CopyTypeApp {
             let mut clipboard = match Clipboard::new() {
                 Ok(cb) => cb,
                 Err(e) => {
-                    error!("无法初始化剪贴板: {}", e);
-                    state.set_status(&format!("剪贴板初始化失败: {}", e));
+                    let err = e.to_string();
+                    error!("{}", state.tr("log.clipboard_init_fail", &[("err", err.as_str())]));
+                    state.set_status(&state.tr("status.clipboard_init_fail", &[("err", err.as_str())]));
                     return;
                 }
             };
 
-            info!("剪贴板监控已启动");
+            info!("{}", state.t("log.clipboard_monitor_started"));
 
             loop {
                 // 只在启用时监控
@@ -465,8 +549,13 @@ impl CopyTypeApp {
                         let last = state.last_clipboard_text.lock().unwrap().clone();
 
                         if text != last && !text.is_empty() {
-                            info!("检测到新的剪贴板内容 ({} 字符)", text.len());
-                            debug!("内容预览: {}", truncate_text(&text, 50));
+                            let len_str = text.len().to_string();
+                            info!(
+                                "{}",
+                                state.tr("log.clipboard_changed", &[("len", len_str.as_str())])
+                            );
+                            let preview = truncate_text(&text, 50);
+                            debug!("{}", state.tr("log.clipboard_preview", &[("preview", preview.as_str())]));
 
                             *state.clipboard_text.lock().unwrap() = text.clone();
                             *state.last_clipboard_text.lock().unwrap() = text;
@@ -494,43 +583,68 @@ impl CopyTypeApp {
         // 处理所有待处理的托盘事件
         let receiver = MenuEvent::receiver();
         let mut event_count = 0;
+        let i18n = self.i18n.clone();
         
         loop {
             match receiver.try_recv() {
                 Ok(event) => {
                     event_count += 1;
-                    info!("收到托盘菜单事件 #{}: id={}", event_count, event.id.0);
+                    let count_str = event_count.to_string();
+                    info!(
+                        "{}",
+                        i18n.tr(
+                            "log.tray_event_received",
+                            &[("count", count_str.as_str()), ("id", event.id.0.as_str())]
+                        )
+                    );
                     
                     let id_str = event.id.0.as_str();
-                    info!("匹配菜单ID: '{}'", id_str);
+                    info!("{}", i18n.tr("log.tray_match_id", &[("id", id_str)]));
                     
                     match id_str {
                         MENU_SHOW => {
-                            info!("执行: 显示窗口");
+                            info!("{}", i18n.t("log.tray_exec_show"));
                             self.state.window_visible.store(true, Ordering::SeqCst);
                             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                         }
                         MENU_TOGGLE => {
                             let enabled = !self.state.is_enabled();
-                            info!("执行: 切换状态为 {}", if enabled { "启用" } else { "禁用" });
+                            let state_text = if enabled {
+                                i18n.t("common.enabled")
+                            } else {
+                                i18n.t("common.disabled")
+                            };
+                            info!(
+                                "{}",
+                                i18n.tr("log.tray_exec_toggle", &[("state", state_text.as_str())])
+                            );
                             self.state.set_enabled(enabled);
-                            self.state.set_status(if enabled { "程序已启用" } else { "程序已禁用" });
+                            let status = if enabled {
+                                i18n.t("status.enabled")
+                            } else {
+                                i18n.t("status.disabled")
+                            };
+                            self.state.set_status(&status);
                         }
                         MENU_EXIT => {
-                            info!("执行: 退出程序");
+                            info!("{}", i18n.t("log.tray_exec_exit"));
                             self.tray_context = None; // 清理托盘图标
                             std::process::exit(0); // 直接退出进程，避免延迟
                         }
                         _ => {
-                            warn!("收到未知的托盘菜单ID: '{}'", id_str);
+                            warn!("{}", i18n.tr("log.tray_unknown_id", &[("id", id_str)]));
                         }
                     }
                 }
                 Err(_) => {
                     // 没有更多事件或通道已断开
                     if event_count > 0 {
-                        info!("本轮处理了 {} 个托盘事件", event_count);
+                        let count_str = event_count.to_string();
+                        info!(
+                            "{}",
+                            i18n.tr("log.tray_processed_count", &[("count", count_str.as_str())])
+                        );
                     }
                     break;
                 }
@@ -541,6 +655,7 @@ impl CopyTypeApp {
 
 impl eframe::App for CopyTypeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let i18n = self.i18n.clone();
         // 处理快捷键事件
         self.handle_hotkey_events();
 
@@ -552,15 +667,15 @@ impl eframe::App for CopyTypeApp {
 
         // 权限警告窗口
         if self.show_permission_warning {
-            egui::Window::new("⚠️ 权限警告")
+            egui::Window::new(i18n.t("ui.title_permission_warning"))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
-                    ui.label("检测到以下权限问题：");
+                    ui.label(i18n.t("ui.label_permission_issues"));
                     ui.add_space(10.0);
 
-                    if let Some(msg) = self.permission_status.get_warning_message() {
+                    if let Some(msg) = self.permission_status.get_warning_message(&i18n) {
                         ui.label(msg);
                     }
 
@@ -568,17 +683,17 @@ impl eframe::App for CopyTypeApp {
                     ui.separator();
                     ui.add_space(10.0);
 
-                    ui.collapsing("查看修复建议", |ui| {
-                        ui.label(get_permission_fix_instructions());
+                    ui.collapsing(i18n.t("ui.label_fix_suggestions"), |ui| {
+                        ui.label(get_permission_fix_instructions(&i18n));
                     });
 
                     ui.add_space(10.0);
 
                     ui.horizontal(|ui| {
-                        if ui.button("我知道了，继续使用").clicked() {
+                        if ui.button(i18n.t("ui.button_acknowledge")).clicked() {
                             self.show_permission_warning = false;
                         }
-                        if ui.button("退出程序").clicked() {
+                        if ui.button(i18n.t("ui.button_exit")).clicked() {
                             self.state.request_exit.store(true, Ordering::SeqCst);
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
@@ -589,36 +704,36 @@ impl eframe::App for CopyTypeApp {
         // 顶部菜单栏
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                ui.menu_button("文件", |ui| {
-                    if ui.button("最小化到托盘").clicked() {
+                ui.menu_button(i18n.t("ui.menu_file"), |ui| {
+                    if ui.button(i18n.t("ui.menu_minimize_to_tray")).clicked() {
                         self.state.window_visible.store(false, Ordering::SeqCst);
                         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("退出").clicked() {
+                    if ui.button(i18n.t("ui.menu_exit")).clicked() {
                         self.state.request_exit.store(true, Ordering::SeqCst);
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
-                ui.menu_button("设置", |ui| {
-                    if ui.button("快捷键设置").clicked() {
+                ui.menu_button(i18n.t("ui.menu_settings"), |ui| {
+                    if ui.button(i18n.t("ui.menu_hotkey_settings")).clicked() {
                         self.show_hotkey_settings = true;
                         self.temp_hotkey_config = self.hotkey_config.clone();
                         ui.close_menu();
                     }
-                    if ui.button("应用设置").clicked() {
+                    if ui.button(i18n.t("ui.menu_app_settings")).clicked() {
                         self.show_app_settings = true;
                         self.temp_app_config = self.app_config.clone();
                         ui.close_menu();
                     }
                 });
-                ui.menu_button("帮助", |ui| {
-                    if ui.button("检查权限").clicked() {
-                        self.permission_status = check_permissions();
+                ui.menu_button(i18n.t("ui.menu_help"), |ui| {
+                    if ui.button(i18n.t("ui.menu_check_permissions")).clicked() {
+                        self.permission_status = check_permissions(&i18n);
                         self.show_permission_warning = !self.permission_status.all_granted();
                         if self.permission_status.all_granted() {
-                            self.state.set_status("权限检查通过");
+                            self.state.set_status(&i18n.t("status.permissions_ok"));
                         }
                         ui.close_menu();
                     }
@@ -630,7 +745,7 @@ impl eframe::App for CopyTypeApp {
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let status = self.state.get_status();
-                ui.label(format!("状态: {}", status));
+                ui.label(i18n.tr("ui.label_status", &[("status", status.as_str())]));
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.state.is_typing() {
@@ -638,7 +753,10 @@ impl eframe::App for CopyTypeApp {
                     }
                     // 权限状态指示
                     if !self.permission_status.all_granted() {
-                        ui.label(egui::RichText::new("⚠️ 权限问题").color(egui::Color32::YELLOW));
+                        ui.label(
+                            egui::RichText::new(i18n.t("ui.label_permission_problem"))
+                                .color(egui::Color32::YELLOW),
+                        );
                     }
                 });
             });
@@ -646,18 +764,26 @@ impl eframe::App for CopyTypeApp {
 
         // 主面板
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Copy-Type");
+            ui.heading(i18n.t("ui.title_main"));
             ui.add_space(10.0);
 
             // 启用/禁用开关
             ui.horizontal(|ui| {
-                ui.label("程序状态:");
+                ui.label(i18n.t("ui.label_app_status"));
                 let mut enabled = self.state.is_enabled();
-                let label = if enabled { "✅ 已启用" } else { "❌ 已禁用" };
+                let label = if enabled {
+                    i18n.t("ui.label_enabled")
+                } else {
+                    i18n.t("ui.label_disabled")
+                };
                 if ui.toggle_value(&mut enabled, label).changed() {
                     self.state.set_enabled(enabled);
-                    self.state
-                        .set_status(if enabled { "程序已启用" } else { "程序已禁用" });
+                    let status = if enabled {
+                        i18n.t("status.enabled")
+                    } else {
+                        i18n.t("status.disabled")
+                    };
+                    self.state.set_status(&status);
                 }
             });
 
@@ -667,9 +793,9 @@ impl eframe::App for CopyTypeApp {
 
             // 快捷键显示
             ui.horizontal(|ui| {
-                ui.label("当前快捷键:");
+                ui.label(i18n.t("ui.label_current_hotkey"));
                 ui.code(self.hotkey_config.display());
-                if ui.button("修改").clicked() {
+                if ui.button(i18n.t("ui.button_modify")).clicked() {
                     self.show_hotkey_settings = true;
                     self.temp_hotkey_config = self.hotkey_config.clone();
                 }
@@ -680,7 +806,7 @@ impl eframe::App for CopyTypeApp {
             ui.add_space(10.0);
 
             // 剪贴板内容预览
-            ui.label("等待输入的文本:");
+            ui.label(i18n.t("ui.label_waiting_text"));
             let clipboard_text = self.state.get_clipboard_text();
 
             egui::ScrollArea::vertical()
@@ -693,7 +819,7 @@ impl eframe::App for CopyTypeApp {
                         .show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
                             if clipboard_text.is_empty() {
-                                ui.label(egui::RichText::new("(空)").italics().weak());
+                                ui.label(egui::RichText::new(i18n.t("ui.label_empty")).italics().weak());
                             } else {
                                 ui.label(&clipboard_text);
                             }
@@ -705,8 +831,10 @@ impl eframe::App for CopyTypeApp {
             // 文本信息
             if !clipboard_text.is_empty() {
                 ui.horizontal(|ui| {
-                    ui.label(format!("字符数: {}", clipboard_text.chars().count()));
-                    ui.label(format!("行数: {}", clipboard_text.lines().count()));
+                    let char_count = clipboard_text.chars().count().to_string();
+                    let line_count = clipboard_text.lines().count().to_string();
+                    ui.label(i18n.tr("ui.label_char_count", &[("count", char_count.as_str())]));
+                    ui.label(i18n.tr("ui.label_line_count", &[("count", line_count.as_str())]));
                 });
             }
 
@@ -720,27 +848,27 @@ impl eframe::App for CopyTypeApp {
                 if ui
                     .add_enabled(
                         enabled && !typing && !clipboard_text.is_empty(),
-                        egui::Button::new("▶ 手动输入"),
+                        egui::Button::new(i18n.t("ui.button_manual_type")),
                     )
                     .clicked()
                 {
                     self.type_text();
                 }
 
-                if ui.button("🗑 清空").clicked() {
+                if ui.button(i18n.t("ui.button_clear")).clicked() {
                     *self.state.clipboard_text.lock().unwrap() = String::new();
-                    self.state.set_status("已清空");
+                    self.state.set_status(&i18n.t("status.cleared"));
                 }
             });
         });
 
         // 快捷键设置窗口
         if self.show_hotkey_settings {
-            egui::Window::new("快捷键设置")
+            egui::Window::new(i18n.t("ui.window_hotkey_settings"))
                 .collapsible(false)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    ui.label("修饰键:");
+                    ui.label(i18n.t("ui.label_modifiers"));
 
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.temp_hotkey_config.ctrl, "Ctrl");
@@ -755,7 +883,7 @@ impl eframe::App for CopyTypeApp {
                     ui.add_space(10.0);
 
                     ui.horizontal(|ui| {
-                        ui.label("按键:");
+                        ui.label(i18n.t("ui.label_keys"));
                         egui::ComboBox::from_label("")
                             .selected_text(self.temp_hotkey_config.key.display())
                             .show_ui(ui, |ui| {
@@ -772,7 +900,7 @@ impl eframe::App for CopyTypeApp {
                     ui.add_space(10.0);
 
                     ui.horizontal(|ui| {
-                        ui.label("预览:");
+                        ui.label(i18n.t("ui.label_preview"));
                         ui.code(self.temp_hotkey_config.display());
                     });
 
@@ -781,11 +909,11 @@ impl eframe::App for CopyTypeApp {
                     ui.add_space(10.0);
 
                     ui.horizontal(|ui| {
-                        if ui.button("保存").clicked() {
+                        if ui.button(i18n.t("ui.button_save")).clicked() {
                             self.update_hotkey();
                             self.show_hotkey_settings = false;
                         }
-                        if ui.button("取消").clicked() {
+                        if ui.button(i18n.t("ui.button_cancel")).clicked() {
                             self.show_hotkey_settings = false;
                         }
                     });
@@ -794,37 +922,62 @@ impl eframe::App for CopyTypeApp {
 
         // 应用设置窗口
         if self.show_app_settings {
-            egui::Window::new("应用设置")
+            egui::Window::new(i18n.t("ui.window_app_settings"))
                 .collapsible(false)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    ui.label("关闭窗口时:");
+                    ui.label(i18n.t("ui.app.label_close_window_action"));
 
                     ui.horizontal(|ui| {
                         ui.radio_value(
                             &mut self.temp_app_config.close_action,
                             CloseAction::MinimizeToTray,
-                            "最小化到托盘",
+                            i18n.t("ui.app.close_action_minimize_to_tray"),
                         );
                         ui.radio_value(
                             &mut self.temp_app_config.close_action,
                             CloseAction::ExitApp,
-                            "退出程序",
+                            i18n.t("ui.app.close_action_exit"),
                         );
                     });
 
                     ui.add_space(10.0);
 
-                    ui.checkbox(&mut self.temp_app_config.start_minimized, "启动时最小化到托盘");
+                    ui.checkbox(
+                        &mut self.temp_app_config.start_minimized,
+                        i18n.t("ui.app.checkbox_start_minimized"),
+                    );
 
                     ui.add_space(10.0);
-                    
-                    ui.label("模拟输入设置:");
+
+                    ui.horizontal(|ui| {
+                        ui.label(i18n.t("ui.app.label_language"));
+                        let selected_label = i18n
+                            .available_languages()
+                            .iter()
+                            .find(|(code, _)| *code == self.temp_app_config.language.as_str())
+                            .map(|(_, name)| (*name).to_string())
+                            .unwrap_or_else(|| self.temp_app_config.language.clone());
+
+                        egui::ComboBox::from_id_salt("language_select")
+                            .selected_text(selected_label)
+                            .show_ui(ui, |ui| {
+                                for (code, name) in i18n.available_languages() {
+                                    ui.selectable_value(
+                                        &mut self.temp_app_config.language,
+                                        code.to_string(),
+                                        format!("{} ({})", name, code),
+                                    );
+                                }
+                            });
+                    });
+
+                    ui.add_space(10.0);
+
+                    ui.label(i18n.t("ui.app.group_typing_settings"));
                     ui.group(|ui| {
-                        ui.label("模拟输入设置:");
-                        
                         ui.horizontal(|ui| {
-                            ui.label("基础延迟 (毫秒):");
+                            ui.label(i18n.t("ui.app.label_base_delay_ms"));
                             ui.add(egui::Slider::new(&mut self.temp_app_config.typing_delay, 0..=2000).text("ms"));
                             
                             // 计算并显示字每分钟
@@ -837,48 +990,52 @@ impl eframe::App for CopyTypeApp {
                             };
                             
                             let speed_text = if self.temp_app_config.typing_delay == 0 {
-                                "≈ 9999+ 字/分钟".to_string()
+                                i18n.t("ui.app.typing_speed_infinite")
                             } else {
-                                format!("≈ {} 字/分钟", chars_per_minute)
+                                let cpm = chars_per_minute.to_string();
+                                i18n.tr("ui.app.typing_speed", &[("cpm", cpm.as_str())])
                             };
                             
                             ui.label(egui::RichText::new(speed_text).weak());
                         });
 
                         ui.horizontal(|ui| {
-                            ui.label("随机偏差 (毫秒):");
+                            ui.label(i18n.t("ui.app.label_variance_ms"));
                             ui.add(egui::Slider::new(&mut self.temp_app_config.typing_variance, 0..=1000).text("ms"));
                         });
 
                          ui.horizontal(|ui| {
-                            ui.label("预设:");
-                             if ui.button("极速").clicked() {
+                            ui.label(i18n.t("ui.app.label_presets"));
+                             if ui.button(i18n.t("ui.app.preset_ultra")).clicked() {
                                 self.temp_app_config.typing_delay = 0;
                                 self.temp_app_config.typing_variance = 0;
                             }
-                            if ui.button("快速").clicked() {
+                            if ui.button(i18n.t("ui.app.preset_fast")).clicked() {
                                 self.temp_app_config.typing_delay = 10;
                                 self.temp_app_config.typing_variance = 5;
                             }
-                            if ui.button("正常").clicked() {
+                            if ui.button(i18n.t("ui.app.preset_normal")).clicked() {
                                 self.temp_app_config.typing_delay = 50;
                                 self.temp_app_config.typing_variance = 30;
                             }
-                             if ui.button("慢速").clicked() {
+                             if ui.button(i18n.t("ui.app.preset_slow")).clicked() {
                                 self.temp_app_config.typing_delay = 150;
                                 self.temp_app_config.typing_variance = 50;
                             }
                         });
 
 
-                        ui.label(egui::RichText::new("增加随机偏差可以让输入更像人类，避免被反作弊检测。").small().weak());
+                        ui.label(egui::RichText::new(i18n.t("ui.app.typing_tip")).small().weak());
                     });
                     
                     #[cfg(target_os = "windows")]
                     {
                         ui.add_space(5.0);
-                        ui.checkbox(&mut self.temp_app_config.show_console, "显示调试控制台");
-                        ui.label(egui::RichText::new("需要重启程序生效").small().weak());
+                        ui.checkbox(
+                            &mut self.temp_app_config.show_console,
+                            i18n.t("ui.app.checkbox_show_console"),
+                        );
+                        ui.label(egui::RichText::new(i18n.t("ui.app.label_restart_required")).small().weak());
                     }
 
                     ui.add_space(10.0);
@@ -886,7 +1043,7 @@ impl eframe::App for CopyTypeApp {
                     ui.add_space(10.0);
 
                     ui.horizontal(|ui| {
-                        if ui.button("保存").clicked() {
+                        if ui.button(i18n.t("ui.button_save")).clicked() {
                             #[cfg(target_os = "windows")]
                             {
                                 let console_changed = self.app_config.show_console != self.temp_app_config.show_console;
@@ -904,17 +1061,22 @@ impl eframe::App for CopyTypeApp {
                             *self.state.typing_delay.lock().unwrap() = self.app_config.typing_delay;
                             *self.state.typing_variance.lock().unwrap() = self.app_config.typing_variance;
                             *self.state.typing_variance_enabled.lock().unwrap() = self.app_config.typing_variance_enabled;
+                            self.i18n.set_language(&self.app_config.language);
                             
                             // 保存时包含当前的快捷键配置
                             self.app_config.hotkey = self.hotkey_config.clone();
                             if let Err(e) = self.app_config.save() {
-                                error!("保存应用配置失败: {}", e);
+                                let err = e.to_string();
+                                error!(
+                                    "{}",
+                                    i18n.tr("log.save_app_config_fail", &[("err", err.as_str())])
+                                );
                             } else {
-                                self.state.set_status("应用设置已保存");
+                                self.state.set_status(&i18n.t("status.app_settings_saved"));
                             }
                             self.show_app_settings = false;
                         }
-                        if ui.button("取消").clicked() {
+                        if ui.button(i18n.t("ui.button_cancel")).clicked() {
                             self.show_app_settings = false;
                         }
                     });
@@ -930,11 +1092,11 @@ impl eframe::App for CopyTypeApp {
                         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                         self.state.window_visible.store(false, Ordering::SeqCst);
                         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                        info!("窗口已最小化到托盘");
+                        info!("{}", i18n.t("log.window_minimized_to_tray"));
                     }
                     CloseAction::ExitApp => {
                         // 允许关闭
-                        info!("程序退出");
+                        info!("{}", i18n.t("log.app_exit"));
                     }
                 }
             }
@@ -1026,7 +1188,7 @@ fn show_console_window() {
         let console_window = GetConsoleWindow();
         if !console_window.is_invalid() {
             let _ = ShowWindow(console_window, SW_SHOW);
-            info!("控制台已显示");
+            info!("Console window shown");
         }
     }
 }
@@ -1046,41 +1208,59 @@ fn hide_console_window() {
 }
 
 /// 创建系统托盘图标
-fn create_tray_context() -> Option<TrayContext> {
+fn create_tray_context(i18n: &I18n) -> Option<TrayContext> {
     // 创建托盘菜单
     let menu = Menu::new();
 
-    let show_item = MenuItem::with_id(MENU_SHOW, "显示窗口", true, None);
-    let toggle_item = MenuItem::with_id(MENU_TOGGLE, "启用/禁用", true, None);
+    let show_text = i18n.t("tray.menu_show");
+    let toggle_text = i18n.t("tray.menu_toggle");
+    let exit_text = i18n.t("tray.menu_exit");
+
+    let show_item = MenuItem::with_id(MENU_SHOW, &show_text, true, None);
+    let toggle_item = MenuItem::with_id(MENU_TOGGLE, &toggle_text, true, None);
     let separator = PredefinedMenuItem::separator();
-    let exit_item = MenuItem::with_id(MENU_EXIT, "退出", true, None);
+    let exit_item = MenuItem::with_id(MENU_EXIT, &exit_text, true, None);
 
     if let Err(e) = menu.append(&show_item) {
-        error!("添加显示菜单项失败: {}", e);
+        let err = e.to_string();
+        error!("{}", i18n.tr("tray.log.add_show_fail", &[("err", err.as_str())]));
     }
     if let Err(e) = menu.append(&toggle_item) {
-        error!("添加切换菜单项失败: {}", e);
+        let err = e.to_string();
+        error!(
+            "{}",
+            i18n.tr("tray.log.add_toggle_fail", &[("err", err.as_str())])
+        );
     }
     if let Err(e) = menu.append(&separator) {
-        error!("添加分隔符失败: {}", e);
+        let err = e.to_string();
+        error!("{}", i18n.tr("tray.log.add_sep_fail", &[("err", err.as_str())]));
     }
     if let Err(e) = menu.append(&exit_item) {
-        error!("添加退出菜单项失败: {}", e);
+        let err = e.to_string();
+        error!(
+            "{}",
+            i18n.tr("tray.log.add_exit_fail", &[("err", err.as_str())])
+        );
     }
     
-    info!("托盘菜单已创建，包含 {} 个菜单项", 3);
+    info!(
+        "{}",
+        i18n.tr("tray.log.menu_created", &[("count", "3")])
+    );
 
     // 创建托盘图标（使用默认图标）
     let icon = create_default_icon();
+    let tooltip = i18n.t("tray.tooltip");
 
     match TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip("Copy-Type - 剪贴板模拟输入")
+        .with_tooltip(&tooltip)
         .with_icon(icon)
         .build()
     {
         Ok(tray) => {
-            info!("系统托盘已创建");
+            info!("{}", i18n.t("tray.log.created"));
             // 将所有相关对象包含在上下文中返回
             Some(TrayContext {
                 tray,
@@ -1091,7 +1271,11 @@ fn create_tray_context() -> Option<TrayContext> {
             })
         }
         Err(e) => {
-            error!("创建系统托盘失败: {}", e);
+            let err = e.to_string();
+            error!(
+                "{}",
+                i18n.tr("tray.log.create_fail", &[("err", err.as_str())])
+            );
             None
         }
     }
@@ -1140,13 +1324,19 @@ fn main() -> eframe::Result<()> {
         .init();
 
     info!("=================================");
-    info!("  Copy-Type 启动");
+    let startup_config = AppConfig::load();
+    let startup_i18n = I18n::new(&startup_config.language);
+    info!("  {}", startup_i18n.t("ui.title_main"));
     info!("=================================");
 
     // 检查权限（启动时也检查一次用于日志记录）
-    let perm = check_permissions();
+    let perm = check_permissions(&startup_i18n);
     if !perm.all_granted() {
-        warn!("权限检查发现问题，程序可能无法正常工作");
+        let issues = perm.issues.join(", ");
+        warn!(
+            "{}",
+            startup_i18n.tr("log.permission_issue", &[("issues", issues.as_str())])
+        );
     }
 
     let options = eframe::NativeOptions {

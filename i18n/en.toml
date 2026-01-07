@@ -14,6 +14,7 @@ permissions_ok = "Permissions check passed"
 cleared = "Cleared"
 enabled = "Program enabled"
 disabled = "Program disabled"
+app_settings_saved = "App settings saved"
 
 [log]
 request_ignored_disabled = "Program disabled, ignoring input request"
@@ -42,6 +43,11 @@ tray_exec_toggle = "Execute: Toggle state to %{state}"
 tray_exec_exit = "Execute: Exit Program"
 tray_unknown_id = "Received unknown tray menu ID: '%{id}'"
 tray_processed_count = "Processed %{count} tray events in this round"
+hotkey_unregister_fail = "Failed to unregister old hotkey: %{err}"
+clipboard_preview = "Preview: %{preview}"
+save_app_config_fail = "Failed to save app config: %{err}"
+window_minimized_to_tray = "Window minimized to tray"
+app_exit = "Program exit"
 
 [ui]
 title_permission_warning = "⚠️ Permission Warning"
@@ -103,6 +109,7 @@ label_close_window_action = "On close:"
 close_action_minimize_to_tray = "Minimize to Tray"
 close_action_exit = "Exit Program"
 checkbox_start_minimized = "Start minimized to tray"
+label_language = "Language:"
 group_typing_settings = "Typing settings:"
 label_base_delay_ms = "Base delay (ms):"
 label_variance_ms = "Random variance (ms):"
@@ -116,17 +123,6 @@ typing_speed = "≈ %{cpm} chars/min"
 typing_tip = "Adding variance makes typing look more human and may reduce anti-cheat detection."
 checkbox_show_console = "Show debug console"
 label_restart_required = "Restart required to take effect"
-
-[status]
-app_settings_saved = "App settings saved"
-
-[log]
-hotkey_unregister_fail = "Failed to unregister old hotkey: %{err}"
-clipboard_preview = "Preview: %{preview}"
-save_app_config_fail = "Failed to save app config: %{err}"
-window_minimized_to_tray = "Window minimized to tray"
-app_exit = "Program exit"
-
 [permissions]
 warn_keyboard = "• Keyboard simulation permission is insufficient: typing may not work"
 warn_clipboard = "• Clipboard access permission is insufficient: clipboard may not be readable"

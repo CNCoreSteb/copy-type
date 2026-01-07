@@ -1,6 +1,7 @@
 //! 权限检查模块
 
 use log::{info, warn};
+use crate::i18n::I18n;
 
 /// 权限检查结果
 #[derive(Debug, Clone)]
@@ -20,20 +21,20 @@ impl PermissionStatus {
     }
 
     /// 获取权限问题的描述信息
-    pub fn get_warning_message(&self) -> Option<String> {
+    pub fn get_warning_message(&self, i18n: &I18n) -> Option<String> {
         if self.all_granted() {
             None
         } else {
             let mut messages = Vec::new();
             
             if !self.keyboard_simulation {
-                messages.push("• 键盘模拟权限不足：程序可能无法正常输入文字");
+                messages.push(i18n.t("permissions.warn_keyboard"));
             }
             if !self.clipboard_access {
-                messages.push("• 剪贴板访问权限不足：程序可能无法读取复制的内容");
+                messages.push(i18n.t("permissions.warn_clipboard"));
             }
             
-            messages.extend(self.issues.iter().map(|s| s.as_str()));
+            messages.extend(self.issues.iter().cloned());
             
             Some(messages.join("\n"))
         }
@@ -41,25 +42,25 @@ impl PermissionStatus {
 }
 
 /// 检查应用程序所需的权限
-pub fn check_permissions() -> PermissionStatus {
+pub fn check_permissions(i18n: &I18n) -> PermissionStatus {
     #[cfg(target_os = "windows")]
     {
-        check_windows_permissions()
+        check_windows_permissions(i18n)
     }
     
     #[cfg(target_os = "macos")]
     {
-        check_macos_permissions()
+        check_macos_permissions(i18n)
     }
     
     #[cfg(target_os = "linux")]
     {
-        check_linux_permissions()
+        check_linux_permissions(i18n)
     }
 }
 
 #[cfg(target_os = "windows")]
-fn check_windows_permissions() -> PermissionStatus {
+fn check_windows_permissions(i18n: &I18n) -> PermissionStatus {
     use windows::Win32::UI::Accessibility::UiaClientsAreListening;
     
     let mut issues = Vec::new();
@@ -75,7 +76,7 @@ fn check_windows_permissions() -> PermissionStatus {
     
     // 检查是否在管理员权限下运行（某些情况下可能需要）
     if !is_elevated() {
-        info!("程序未以管理员权限运行");
+        info!("{}", i18n.t("permissions.windows.not_admin"));
         // 这不一定是问题，只是记录一下
     }
     
@@ -83,12 +84,16 @@ fn check_windows_permissions() -> PermissionStatus {
     // 这里我们通过尝试创建一个 Enigo 实例来检测
     match enigo::Enigo::new(&enigo::Settings::default()) {
         Ok(_) => {
-            info!("键盘模拟初始化成功");
+            info!("{}", i18n.t("permissions.windows.enigo_ok"));
         }
         Err(e) => {
-            warn!("键盘模拟初始化失败: {}", e);
+            let err = e.to_string();
+            warn!("{}", i18n.tr("permissions.windows.enigo_fail", &[("err", err.as_str())]));
             keyboard_ok = false;
-            issues.push(format!("键盘模拟器初始化失败: {}", e));
+            issues.push(i18n.tr(
+                "permissions.windows.enigo_fail_issue",
+                &[("err", err.as_str())],
+            ));
         }
     }
     
@@ -131,7 +136,7 @@ fn is_elevated() -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn check_macos_permissions() -> PermissionStatus {
+fn check_macos_permissions(i18n: &I18n) -> PermissionStatus {
     let mut issues = Vec::new();
     let keyboard_ok;
     let clipboard_ok = true;
@@ -141,12 +146,16 @@ fn check_macos_permissions() -> PermissionStatus {
     match enigo::Enigo::new(&enigo::Settings::default()) {
         Ok(_) => {
             keyboard_ok = true;
-            info!("辅助功能权限已授予");
+            info!("{}", i18n.t("permissions.macos.accessibility_granted"));
         }
         Err(e) => {
             keyboard_ok = false;
-            warn!("辅助功能权限未授予: {}", e);
-            issues.push("请在「系统偏好设置」→「安全性与隐私」→「隐私」→「辅助功能」中授权本应用".to_string());
+            let err = e.to_string();
+            warn!(
+                "{}",
+                i18n.tr("permissions.macos.accessibility_denied", &[("err", err.as_str())])
+            );
+            issues.push(i18n.t("permissions.macos.accessibility_fix"));
         }
     }
     
@@ -158,7 +167,7 @@ fn check_macos_permissions() -> PermissionStatus {
 }
 
 #[cfg(target_os = "linux")]
-fn check_linux_permissions() -> PermissionStatus {
+fn check_linux_permissions(i18n: &I18n) -> PermissionStatus {
     let mut issues = Vec::new();
     let keyboard_ok;
     let clipboard_ok = true;
@@ -167,12 +176,13 @@ fn check_linux_permissions() -> PermissionStatus {
     match enigo::Enigo::new(&enigo::Settings::default()) {
         Ok(_) => {
             keyboard_ok = true;
-            info!("键盘模拟权限正常");
+            info!("{}", i18n.t("permissions.linux.keyboard_ok"));
         }
         Err(e) => {
             keyboard_ok = false;
-            warn!("键盘模拟权限不足: {}", e);
-            issues.push("可能需要将用户添加到 input 组：sudo usermod -a -G input $USER".to_string());
+            let err = e.to_string();
+            warn!("{}", i18n.tr("permissions.linux.keyboard_denied", &[("err", err.as_str())]));
+            issues.push(i18n.t("permissions.linux.add_to_input_group"));
         }
     }
     
@@ -184,40 +194,22 @@ fn check_linux_permissions() -> PermissionStatus {
 }
 
 /// 获取权限修复建议
-pub fn get_permission_fix_instructions() -> &'static str {
+pub fn get_permission_fix_instructions(i18n: &I18n) -> String {
     #[cfg(target_os = "windows")]
     {
-        r#"修复建议：
-
-1. 确保没有安全软件阻止本程序
-2. 尝试以管理员身份运行程序
-3. 检查 Windows 安全中心是否有相关警告
-4. 如果问题持续，请尝试重新安装程序"#
+        return i18n.t("permissions.fix.windows");
     }
     
     #[cfg(target_os = "macos")]
     {
-        r#"修复建议：
-
-1. 打开「系统偏好设置」
-2. 进入「安全性与隐私」→「隐私」
-3. 在左侧选择「辅助功能」
-4. 点击左下角的锁图标解锁
-5. 勾选 Copy-Type 应用程序
-6. 重新启动本程序"#
+        return i18n.t("permissions.fix.macos");
     }
     
     #[cfg(target_os = "linux")]
     {
-        r#"修复建议：
-
-1. 将当前用户添加到 input 组：
-   sudo usermod -a -G input $USER
-
-2. 注销并重新登录
-
-3. 如果使用 Wayland，可能需要额外配置：
-   - 某些 Wayland 环境可能不支持全局键盘模拟
-   - 考虑切换到 X11 会话"#
+        return i18n.t("permissions.fix.linux");
     }
+    
+    #[allow(unreachable_code)]
+    String::new()
 }

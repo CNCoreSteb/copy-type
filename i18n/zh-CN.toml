@@ -14,6 +14,7 @@ permissions_ok = "权限检查通过"
 cleared = "已清空"
 enabled = "程序已启用"
 disabled = "程序已禁用"
+app_settings_saved = "应用设置已保存"
 
 [log]
 request_ignored_disabled = "程序已禁用，忽略输入请求"
@@ -42,6 +43,11 @@ tray_exec_toggle = "执行: 切换状态为 %{state}"
 tray_exec_exit = "执行: 退出程序"
 tray_unknown_id = "收到未知的托盘菜单ID: '%{id}'"
 tray_processed_count = "本轮处理了 %{count} 个托盘事件"
+hotkey_unregister_fail = "注销旧快捷键失败: %{err}"
+clipboard_preview = "内容预览: %{preview}"
+save_app_config_fail = "保存应用配置失败: %{err}"
+window_minimized_to_tray = "窗口已最小化到托盘"
+app_exit = "程序退出"
 
 [ui]
 title_permission_warning = "⚠️ 权限警告"
@@ -103,6 +109,7 @@ label_close_window_action = "关闭窗口时:"
 close_action_minimize_to_tray = "最小化到托盘"
 close_action_exit = "退出程序"
 checkbox_start_minimized = "启动时最小化到托盘"
+label_language = "界面语言:"
 group_typing_settings = "模拟输入设置:"
 label_base_delay_ms = "基础延迟 (毫秒):"
 label_variance_ms = "随机偏差 (毫秒):"
@@ -116,17 +123,6 @@ typing_speed = "≈ %{cpm} 字/分钟"
 typing_tip = "增加随机偏差可以让输入更像人类，避免被反作弊检测。"
 checkbox_show_console = "显示调试控制台"
 label_restart_required = "需要重启程序生效"
-
-[status]
-app_settings_saved = "应用设置已保存"
-
-[log]
-hotkey_unregister_fail = "注销旧快捷键失败: %{err}"
-clipboard_preview = "内容预览: %{preview}"
-save_app_config_fail = "保存应用配置失败: %{err}"
-window_minimized_to_tray = "窗口已最小化到托盘"
-app_exit = "程序退出"
-
 [permissions]
 warn_keyboard = "• 键盘模拟权限不足：程序可能无法正常输入文字"
 warn_clipboard = "• 剪贴板访问权限不足：程序可能无法读取复制的内容"
