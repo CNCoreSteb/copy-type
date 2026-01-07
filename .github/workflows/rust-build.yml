@@ -24,7 +24,7 @@ jobs:
             asset_name: copy-type-linux-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact_name: copy-type. exe
+            artifact_name: copy-type.exe
             asset_name: copy-type-windows-x86_64.exe
           - os: macos-latest
             target:  x86_64-apple-darwin
