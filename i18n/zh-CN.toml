@@ -1,4 +1,4 @@
-[status]
+﻿[status]
 ready = "就绪"
 typing = "正在输入..."
 typing_paused = "已暂停输入，按快捷键继续"

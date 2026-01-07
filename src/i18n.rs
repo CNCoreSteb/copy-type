@@ -69,10 +69,30 @@ fn load_store() -> HashMap<String, HashMap<String, String>> {
     let mut store = HashMap::new();
     store.insert(
         "zh-CN".to_string(),
-        parse_lang(include_str!("../i18n/zh-CN.toml")),
+        parse_lang_bytes(include_bytes!("../i18n/zh-CN.toml")),
     );
-    store.insert("en".to_string(), parse_lang(include_str!("../i18n/en.toml")));
+    store.insert(
+        "en".to_string(),
+        parse_lang_bytes(include_bytes!("../i18n/en.toml")),
+    );
     store
+}
+
+fn parse_lang_bytes(content: &[u8]) -> HashMap<String, String> {
+    // Ensure UTF-8 encoding support for translation files
+    // Skip UTF-8 BOM (EF BB BF) if present
+    let bytes = if content.len() >= 3 
+        && content[0] == 0xEF 
+        && content[1] == 0xBB 
+        && content[2] == 0xBF {
+        &content[3..]
+    } else {
+        content
+    };
+    
+    // from_utf8_lossy handles invalid UTF-8 sequences gracefully
+    let text = String::from_utf8_lossy(bytes);
+    parse_lang(&text)
 }
 
 fn parse_lang(content: &str) -> HashMap<String, String> {

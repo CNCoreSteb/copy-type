@@ -1,4 +1,4 @@
-[status]
+﻿[status]
 ready = "Ready"
 typing = "Typing..."
 typing_paused = "Typing paused, press the hotkey to resume"

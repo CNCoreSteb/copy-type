@@ -1,5 +1,7 @@
 # Copy-Type
 
+[English](README_en.md) | 中文
+
 一个跨平台的剪贴板监控和模拟键盘输入工具，基于Rust。
 
 ## 功能
