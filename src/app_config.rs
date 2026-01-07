@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use crate::hotkey_config::HotkeyConfig;
 
 /// 关闭窗口时的行为
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +51,9 @@ pub struct AppConfig {
     /// 是否启用随机偏差
     #[serde(default)]
     pub typing_variance_enabled: bool,
+    /// 快捷键配置
+    #[serde(default)]
+    pub hotkey: HotkeyConfig,
 }
 
 fn default_typing_delay() -> u64 {
@@ -70,6 +74,7 @@ impl Default for AppConfig {
             typing_delay: default_typing_delay(),
             typing_variance: default_typing_variance(),
             typing_variance_enabled: false,
+            hotkey: HotkeyConfig::default(),
         }
     }
 }
@@ -77,7 +82,7 @@ impl Default for AppConfig {
 impl AppConfig {
     /// 获取配置文件路径
     fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|p| p.join("copy-type").join("app_config.json"))
+        dirs::config_dir().map(|p| p.join("copy-type").join("config.json"))
     }
 
     /// 从文件加载配置

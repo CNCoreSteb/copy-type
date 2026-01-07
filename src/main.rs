@@ -253,9 +253,9 @@ impl CopyTypeApp {
             warn!("权限检查发现问题: {:?}", permission_status.issues);
         }
 
-        // 加载配置
-        let hotkey_config = HotkeyConfig::load().unwrap_or_default();
+        // 加载配置（统一从 AppConfig 加载）
         let app_config = AppConfig::load();
+        let hotkey_config = app_config.hotkey.clone();
 
         // 创建共享状态
         let state = SharedState::new();
@@ -427,8 +427,9 @@ impl CopyTypeApp {
                         self.state
                             .set_status(&format!("快捷键已更新: {}", self.hotkey_config.display()));
 
-                        // 保存配置
-                        if let Err(e) = self.hotkey_config.save() {
+                        // 保存配置（更新 app_config.hotkey 并保存）
+                        self.app_config.hotkey = self.hotkey_config.clone();
+                        if let Err(e) = self.app_config.save() {
                             error!("保存配置失败: {}", e);
                         }
                     }
@@ -904,6 +905,8 @@ impl eframe::App for CopyTypeApp {
                             *self.state.typing_variance.lock().unwrap() = self.app_config.typing_variance;
                             *self.state.typing_variance_enabled.lock().unwrap() = self.app_config.typing_variance_enabled;
                             
+                            // 保存时包含当前的快捷键配置
+                            self.app_config.hotkey = self.hotkey_config.clone();
                             if let Err(e) = self.app_config.save() {
                                 error!("保存应用配置失败: {}", e);
                             } else {

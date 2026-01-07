@@ -2,8 +2,6 @@
 
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::PathBuf;
 
 /// 支持的按键
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -267,29 +265,6 @@ impl Default for HotkeyConfig {
 }
 
 impl HotkeyConfig {
-    /// 获取配置文件路径
-    fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|p| p.join("copy-type").join("config.json"))
-    }
-
-    /// 从文件加载配置
-    pub fn load() -> Option<Self> {
-        let path = Self::config_path()?;
-        let content = fs::read_to_string(&path).ok()?;
-        serde_json::from_str(&content).ok()
-    }
-
-    /// 保存配置到文件
-    pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
-        if let Some(path) = Self::config_path() {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let content = serde_json::to_string_pretty(self)?;
-            fs::write(&path, content)?;
-        }
-        Ok(())
-    }
 
     /// 显示快捷键组合
     pub fn display(&self) -> String {
