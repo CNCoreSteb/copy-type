@@ -820,6 +820,7 @@ dependencies = [
  "global-hotkey",
  "image",
  "log",
+ "rand",
  "serde",
  "serde_json",
  "tray-icon",

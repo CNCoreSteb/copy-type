@@ -44,9 +44,19 @@ pub struct AppConfig {
     /// 模拟输入时的按键延迟 (毫秒)
     #[serde(default = "default_typing_delay")]
     pub typing_delay: u64,
+    /// 模拟输入时的随机偏差 (毫秒)
+    #[serde(default = "default_typing_variance")]
+    pub typing_variance: u64,
+    /// 是否启用随机偏差
+    #[serde(default)]
+    pub typing_variance_enabled: bool,
 }
 
 fn default_typing_delay() -> u64 {
+    20 // 默认稍微带点延迟，更像人
+}
+
+fn default_typing_variance() -> u64 {
     0
 }
 
@@ -58,6 +68,8 @@ impl Default for AppConfig {
             start_minimized: false,
             show_console: false,
             typing_delay: default_typing_delay(),
+            typing_variance: default_typing_variance(),
+            typing_variance_enabled: false,
         }
     }
 }

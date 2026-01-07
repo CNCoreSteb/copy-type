@@ -1,11 +1,4 @@
-//! Copy-Type: 剪贴板监控和模拟键盘输入工具
-//!
-//! 功能：
-//! - 监控剪贴板变化，记录复制的文字
-//! - 通过快捷键触发模拟键盘输入
-//! - 保留文字格式（换行符等）
-//! - GUI 界面控制
-//! - 系统托盘支持
+
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -21,6 +14,7 @@ use global_hotkey::{hotkey::HotKey, GlobalHotKeyEvent, GlobalHotKeyManager};
 use hotkey_config::{HotkeyConfig, KeyCode};
 use log::{debug, error, info, warn};
 use permissions::{check_permissions, get_permission_fix_instructions, PermissionStatus};
+use rand::Rng;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -57,6 +51,10 @@ struct SharedState {
     window_visible: Arc<AtomicBool>,
     /// 模拟输入时的延迟 (毫秒)
     typing_delay: Arc<Mutex<u64>>,
+    /// 模拟输入时的随机偏差 (毫秒)
+    typing_variance: Arc<Mutex<u64>>,
+    /// 是否启用随机偏差
+    typing_variance_enabled: Arc<Mutex<bool>>,
     /// 当前快捷键 ID
     hotkey_id: Arc<Mutex<Option<u32>>>,
 }
@@ -72,6 +70,8 @@ impl SharedState {
             request_exit: Arc::new(AtomicBool::new(false)),
             window_visible: Arc::new(AtomicBool::new(true)),
             typing_delay: Arc::new(Mutex::new(0)),
+            typing_variance: Arc::new(Mutex::new(0)),
+            typing_variance_enabled: Arc::new(Mutex::new(false)),
             hotkey_id: Arc::new(Mutex::new(None)),
         }
     }
@@ -120,6 +120,8 @@ impl SharedState {
         self.set_status("正在输入...");
         let state = self.clone();
         let delay = *self.typing_delay.lock().unwrap();
+        let variance = *self.typing_variance.lock().unwrap();
+        let variance_enabled = *self.typing_variance_enabled.lock().unwrap();
 
         thread::spawn(move || {
             // 稍微延迟，让用户松开快捷键
@@ -134,7 +136,13 @@ impl SharedState {
                 return;
             }
 
-            info!("开始模拟输入 ({} 字符, 延迟 {}ms)", text.len(), delay);
+            info!(
+                "开始模拟输入 ({} 字符, 延迟 {}ms, 偏差 {}ms, 启用偏差: {})",
+                text.len(),
+                delay,
+                variance,
+                variance_enabled
+            );
 
             let settings = Settings::default();
             let mut enigo = match Enigo::new(&settings) {
@@ -147,14 +155,27 @@ impl SharedState {
                 }
             };
 
-            let result = if delay > 0 {
+            let result = if delay > 0 || (variance_enabled && variance > 0) {
                 let mut res = Ok(());
+                let mut rng = rand::thread_rng();
+
                 for c in text.chars() {
                     if let Err(e) = enigo.text(&c.to_string()) {
                         res = Err(e);
                         break;
                     }
-                    thread::sleep(Duration::from_millis(delay));
+
+                     // 计算实际延迟
+                    let mut actual_delay = delay;
+                    if variance_enabled && variance > 0 {
+                        // 在 [delay, delay + variance] 之间随机
+                        let v = rng.gen_range(0..=variance);
+                        actual_delay += v;
+                    }
+
+                    if actual_delay > 0 {
+                        thread::sleep(Duration::from_millis(actual_delay));
+                    }
                 }
                 res
             } else {
@@ -240,6 +261,8 @@ impl CopyTypeApp {
         let state = SharedState::new();
         // 初始化 state 中的配置值
         *state.typing_delay.lock().unwrap() = app_config.typing_delay;
+        *state.typing_variance.lock().unwrap() = app_config.typing_variance;
+        *state.typing_variance_enabled.lock().unwrap() = app_config.typing_variance_enabled;
 
         // 根据配置显示/隐藏控制台
         #[cfg(target_os = "windows")]
@@ -796,12 +819,60 @@ impl eframe::App for CopyTypeApp {
                     ui.add_space(10.0);
                     
                     ui.label("模拟输入设置:");
-                    ui.horizontal(|ui| {
-                        ui.label("字符间隔延迟 (毫秒):");
-                        ui.add(egui::DragValue::new(&mut self.temp_app_config.typing_delay).speed(5.0).range(0..=2000));
-                    });
-                    ui.label(egui::RichText::new("增加延迟可确保模拟过程更像真实的键盘敲击，避免被识别为粘贴。").small().weak());
+                    ui.group(|ui| {
+                        ui.label("模拟输入设置:");
+                        
+                        ui.horizontal(|ui| {
+                            ui.label("基础延迟 (毫秒):");
+                            ui.add(egui::Slider::new(&mut self.temp_app_config.typing_delay, 0..=2000).text("ms"));
+                            
+                            // 计算并显示字每分钟
+                            let chars_per_minute = if self.temp_app_config.typing_delay > 0 {
+                                let avg_delay = self.temp_app_config.typing_delay as f64 
+                                    + (self.temp_app_config.typing_variance as f64 / 2.0);
+                                (60000.0 / avg_delay) as u32
+                            } else {
+                                9999 // 极速模式显示为 9999+
+                            };
+                            
+                            let speed_text = if self.temp_app_config.typing_delay == 0 {
+                                "≈ 9999+ 字/分钟".to_string()
+                            } else {
+                                format!("≈ {} 字/分钟", chars_per_minute)
+                            };
+                            
+                            ui.label(egui::RichText::new(speed_text).weak());
+                        });
 
+                        ui.horizontal(|ui| {
+                            ui.label("随机偏差 (毫秒):");
+                            ui.add(egui::Slider::new(&mut self.temp_app_config.typing_variance, 0..=1000).text("ms"));
+                        });
+
+                         ui.horizontal(|ui| {
+                            ui.label("预设:");
+                             if ui.button("极速").clicked() {
+                                self.temp_app_config.typing_delay = 0;
+                                self.temp_app_config.typing_variance = 0;
+                            }
+                            if ui.button("快速").clicked() {
+                                self.temp_app_config.typing_delay = 10;
+                                self.temp_app_config.typing_variance = 5;
+                            }
+                            if ui.button("正常").clicked() {
+                                self.temp_app_config.typing_delay = 50;
+                                self.temp_app_config.typing_variance = 30;
+                            }
+                             if ui.button("慢速").clicked() {
+                                self.temp_app_config.typing_delay = 150;
+                                self.temp_app_config.typing_variance = 50;
+                            }
+                        });
+
+
+                        ui.label(egui::RichText::new("增加随机偏差可以让输入更像人类，避免被反作弊检测。").small().weak());
+                    });
+                    
                     #[cfg(target_os = "windows")]
                     {
                         ui.add_space(5.0);
@@ -830,6 +901,8 @@ impl eframe::App for CopyTypeApp {
                             self.app_config = self.temp_app_config.clone();
                             // 更新 state 中的配置
                             *self.state.typing_delay.lock().unwrap() = self.app_config.typing_delay;
+                            *self.state.typing_variance.lock().unwrap() = self.app_config.typing_variance;
+                            *self.state.typing_variance_enabled.lock().unwrap() = self.app_config.typing_variance_enabled;
                             
                             if let Err(e) = self.app_config.save() {
                                 error!("保存应用配置失败: {}", e);
