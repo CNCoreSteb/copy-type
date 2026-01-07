@@ -77,6 +77,10 @@ jobs:
       run: |
         mkdir -p artifacts
         cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}
+        # 为 Linux 和 macOS 二进制文件添加可执行权限
+        if [ "${{ matrix.os }}" != "windows-latest" ]; then
+          chmod +x artifacts/${{ matrix.asset_name }}
+        fi
     
     # 将构建产物暂时上传，以便传给下一个 job
     - name: Upload artifacts
