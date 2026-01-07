@@ -15,6 +15,7 @@ enigo = { version = "0.2", features = ["serde"] }
 # GUI 框架
 eframe = "0.30"
 egui = "0.30"
+raw-window-handle = "0.6"
 # 系统托盘
 tray-icon = "0.19"
 # 图标处理

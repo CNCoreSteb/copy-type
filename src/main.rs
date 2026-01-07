@@ -27,6 +27,8 @@ use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     TrayIcon, TrayIconBuilder,
 };
+#[cfg(target_os = "windows")]
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 /// 托盘菜单项 ID
 const MENU_SHOW: &str = "show";
@@ -306,9 +308,10 @@ impl CopyTypeApp {
         // 创建系统托盘，并保存上下文
         let tray_context = create_tray_context(&i18n);
         
+        let window_hwnd = get_window_hwnd(cc);
         let ctx_clone = cc.egui_ctx.clone();
         let i18n_tray = i18n.clone();
-        let _state_enabled_clone = Arc::new(Mutex::new(app_config.auto_start)); // 这里只是暂时的占位，真正的状态在 SharedState::new 中
+        let tray_state = state.clone();
 
         // 启动独立的托盘事件监控线程
         // 这解决了主线程阻塞导致托盘事件无法及时处理的问题
@@ -327,14 +330,29 @@ impl CopyTypeApp {
                             std::process::exit(0);
                         }
                         MENU_SHOW => {
-                            ctx_clone.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                            ctx_clone.send_viewport_cmd(egui::ViewportCommand::Focus);
-                            ctx_clone.request_repaint();
+                            info!("{}", i18n_tray.t("log.tray_exec_show"));
+                            tray_state.window_visible.store(true, Ordering::SeqCst);
+                            show_main_window(&ctx_clone, window_hwnd);
                         }
                         MENU_TOGGLE => {
-                            // 切换逻辑比较复杂，我们还是让主线程处理
-                            // 但我们需要确保主线程被唤醒
-                             ctx_clone.request_repaint();
+                            let enabled = !tray_state.is_enabled();
+                            let state_text = if enabled {
+                                i18n_tray.t("common.enabled")
+                            } else {
+                                i18n_tray.t("common.disabled")
+                            };
+                            info!(
+                                "{}",
+                                i18n_tray.tr("log.tray_exec_toggle", &[("state", state_text.as_str())])
+                            );
+                            tray_state.set_enabled(enabled);
+                            let status = if enabled {
+                                i18n_tray.t("status.enabled")
+                            } else {
+                                i18n_tray.t("status.disabled")
+                            };
+                            tray_state.set_status(&status);
+                            ctx_clone.request_repaint();
                         }
                         _ => {
                             ctx_clone.request_repaint();
@@ -578,79 +596,6 @@ impl CopyTypeApp {
         // 快捷键事件现在由后台线程处理
     }
 
-    /// 处理托盘菜单事件
-    fn handle_tray_events(&mut self, ctx: &egui::Context) {
-        // 处理所有待处理的托盘事件
-        let receiver = MenuEvent::receiver();
-        let mut event_count = 0;
-        let i18n = self.i18n.clone();
-        
-        loop {
-            match receiver.try_recv() {
-                Ok(event) => {
-                    event_count += 1;
-                    let count_str = event_count.to_string();
-                    info!(
-                        "{}",
-                        i18n.tr(
-                            "log.tray_event_received",
-                            &[("count", count_str.as_str()), ("id", event.id.0.as_str())]
-                        )
-                    );
-                    
-                    let id_str = event.id.0.as_str();
-                    info!("{}", i18n.tr("log.tray_match_id", &[("id", id_str)]));
-                    
-                    match id_str {
-                        MENU_SHOW => {
-                            info!("{}", i18n.t("log.tray_exec_show"));
-                            self.state.window_visible.store(true, Ordering::SeqCst);
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                        }
-                        MENU_TOGGLE => {
-                            let enabled = !self.state.is_enabled();
-                            let state_text = if enabled {
-                                i18n.t("common.enabled")
-                            } else {
-                                i18n.t("common.disabled")
-                            };
-                            info!(
-                                "{}",
-                                i18n.tr("log.tray_exec_toggle", &[("state", state_text.as_str())])
-                            );
-                            self.state.set_enabled(enabled);
-                            let status = if enabled {
-                                i18n.t("status.enabled")
-                            } else {
-                                i18n.t("status.disabled")
-                            };
-                            self.state.set_status(&status);
-                        }
-                        MENU_EXIT => {
-                            info!("{}", i18n.t("log.tray_exec_exit"));
-                            self.tray_context = None; // 清理托盘图标
-                            std::process::exit(0); // 直接退出进程，避免延迟
-                        }
-                        _ => {
-                            warn!("{}", i18n.tr("log.tray_unknown_id", &[("id", id_str)]));
-                        }
-                    }
-                }
-                Err(_) => {
-                    // 没有更多事件或通道已断开
-                    if event_count > 0 {
-                        let count_str = event_count.to_string();
-                        info!(
-                            "{}",
-                            i18n.tr("log.tray_processed_count", &[("count", count_str.as_str())])
-                        );
-                    }
-                    break;
-                }
-            }
-        }
-    }
 }
 
 impl eframe::App for CopyTypeApp {
@@ -658,9 +603,6 @@ impl eframe::App for CopyTypeApp {
         let i18n = self.i18n.clone();
         // 处理快捷键事件
         self.handle_hotkey_events();
-
-        // 处理托盘菜单事件
-        self.handle_tray_events(ctx);
 
         // 请求持续重绘以处理事件
         ctx.request_repaint_after(Duration::from_millis(50));
@@ -1279,6 +1221,43 @@ fn create_tray_context(i18n: &I18n) -> Option<TrayContext> {
             None
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn get_window_hwnd(cc: &eframe::CreationContext<'_>) -> Option<isize> {
+    cc.window_handle().ok().and_then(|handle| match handle.as_raw() {
+        RawWindowHandle::Win32(win) => Some(win.hwnd.get()),
+        _ => None,
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_window_hwnd(_cc: &eframe::CreationContext<'_>) -> Option<isize> {
+    None
+}
+
+fn show_main_window(ctx: &egui::Context, window_hwnd: Option<isize>) {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(hwnd) = window_hwnd {
+            use windows::Win32::Foundation::HWND;
+            use windows::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_RESTORE};
+
+            unsafe {
+                let hwnd = HWND(hwnd as *mut std::ffi::c_void);
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+                let _ = SetForegroundWindow(hwnd);
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window_hwnd;
+    }
+
+    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    ctx.request_repaint();
 }
 
 /// 创建默认托盘图标
