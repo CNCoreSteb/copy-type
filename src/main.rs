@@ -22,7 +22,7 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     TrayIcon, TrayIconBuilder,
@@ -42,6 +42,12 @@ struct SharedState {
     clipboard_text: Arc<Mutex<String>>,
     /// 上一次的剪贴板文本（用于检测变化）
     last_clipboard_text: Arc<Mutex<String>>,
+    /// 剪贴板历史记录
+    clipboard_history: Arc<Mutex<Vec<String>>>,
+    /// 是否保存剪贴板历史
+    history_enabled: Arc<Mutex<bool>>,
+    /// 剪贴板历史最多保存条数
+    history_max_items: Arc<Mutex<u32>>,
     /// 是否正在输入中（防止重复触发）
     is_typing: Arc<Mutex<bool>>,
     /// 程序是否启用
@@ -59,6 +65,10 @@ struct SharedState {
     typing_variance: Arc<Mutex<u64>>,
     /// 是否启用随机偏差
     typing_variance_enabled: Arc<Mutex<bool>>,
+    /// 输入是否暂停
+    typing_paused: Arc<Mutex<bool>>,
+    /// 最近一次快捷键触发时间
+    last_hotkey_trigger: Arc<Mutex<Option<Instant>>>,
     /// 当前快捷键 ID
     hotkey_id: Arc<Mutex<Option<u32>>>,
     /// 语言资源
@@ -71,6 +81,9 @@ impl SharedState {
         Self {
             clipboard_text: Arc::new(Mutex::new(String::new())),
             last_clipboard_text: Arc::new(Mutex::new(String::new())),
+            clipboard_history: Arc::new(Mutex::new(Vec::new())),
+            history_enabled: Arc::new(Mutex::new(false)),
+            history_max_items: Arc::new(Mutex::new(0)),
             is_typing: Arc::new(Mutex::new(false)),
             enabled: Arc::new(Mutex::new(true)),
             status_message: Arc::new(Mutex::new(ready)),
@@ -79,6 +92,8 @@ impl SharedState {
             typing_delay: Arc::new(Mutex::new(0)),
             typing_variance: Arc::new(Mutex::new(0)),
             typing_variance_enabled: Arc::new(Mutex::new(false)),
+            typing_paused: Arc::new(Mutex::new(false)),
+            last_hotkey_trigger: Arc::new(Mutex::new(None)),
             hotkey_id: Arc::new(Mutex::new(None)),
             i18n,
         }
@@ -107,12 +122,72 @@ impl SharedState {
     fn is_typing(&self) -> bool {
         *self.is_typing.lock().unwrap()
     }
+
+    fn toggle_typing_pause(&self) -> bool {
+        let mut paused = self.typing_paused.lock().unwrap();
+        *paused = !*paused;
+        *paused
+    }
+
+    fn wait_if_paused(&self) {
+        loop {
+            if !*self.typing_paused.lock().unwrap() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn should_handle_hotkey(&self) -> bool {
+        let mut last = self.last_hotkey_trigger.lock().unwrap();
+        let now = Instant::now();
+        if let Some(prev) = *last {
+            if now.duration_since(prev) < Duration::from_millis(200) {
+                return false;
+            }
+        }
+        *last = Some(now);
+        true
+    }
     fn t(&self, key: &str) -> String {
         self.i18n.t(key)
     }
 
     fn tr<'a>(&self, key: &str, args: &[(&str, &'a str)]) -> String {
         self.i18n.tr(key, args)
+    }
+
+    fn record_history(&self, text: String) {
+        if !*self.history_enabled.lock().unwrap() {
+            return;
+        }
+        let max_items = *self.history_max_items.lock().unwrap();
+        if max_items == 0 {
+            return;
+        }
+        let mut history = self.clipboard_history.lock().unwrap();
+        history.push(text);
+        if history.len() > max_items as usize {
+            let overflow = history.len() - max_items as usize;
+            history.drain(0..overflow);
+        }
+    }
+
+    fn clear_history(&self) {
+        self.clipboard_history.lock().unwrap().clear();
+    }
+
+    fn trim_history(&self) {
+        let max_items = *self.history_max_items.lock().unwrap();
+        if max_items == 0 {
+            self.clear_history();
+            return;
+        }
+        let mut history = self.clipboard_history.lock().unwrap();
+        if history.len() > max_items as usize {
+            let overflow = history.len() - max_items as usize;
+            history.drain(0..overflow);
+        }
     }
     
     /// 执行模拟输入逻辑
@@ -132,6 +207,7 @@ impl SharedState {
             *typing = true;
         }
 
+        *self.typing_paused.lock().unwrap() = false;
         self.set_status(&self.t("status.typing"));
         let state = self.clone();
         let delay = *self.typing_delay.lock().unwrap();
@@ -147,6 +223,7 @@ impl SharedState {
             if text.is_empty() {
                 warn!("{}", state.t("log.clipboard_empty"));
                 state.set_status(&state.t("status.clipboard_empty"));
+                *state.typing_paused.lock().unwrap() = false;
                 *state.is_typing.lock().unwrap() = false;
                 return;
             }
@@ -176,37 +253,40 @@ impl SharedState {
                     let err = e.to_string();
                     error!("{}", state.tr("log.input_init_error", &[("err", err.as_str())]));
                     state.set_status(&state.tr("status.input_init_error", &[("err", err.as_str())]));
+                    *state.typing_paused.lock().unwrap() = false;
                     *state.is_typing.lock().unwrap() = false;
                     return;
                 }
             };
 
-            let result = if delay > 0 || (variance_enabled && variance > 0) {
-                let mut res = Ok(());
-                let mut rng = rand::thread_rng();
+            let mut result = Ok(());
+            let mut rng = rand::thread_rng();
 
-                for c in text.chars() {
-                    if let Err(e) = enigo.text(&c.to_string()) {
-                        res = Err(e);
-                        break;
-                    }
+            for c in text.chars() {
+                state.wait_if_paused();
+                if let Err(e) = enigo.text(&c.to_string()) {
+                    result = Err(e);
+                    break;
+                }
 
-                     // 计算实际延迟
-                    let mut actual_delay = delay;
-                    if variance_enabled && variance > 0 {
-                        // 在 [delay, delay + variance] 之间随机
-                        let v = rng.gen_range(0..=variance);
-                        actual_delay += v;
-                    }
+                 // 计算实际延迟
+                let mut actual_delay = delay;
+                if variance_enabled && variance > 0 {
+                    // 在 [delay, delay + variance] 之间随机
+                    let v = rng.gen_range(0..=variance);
+                    actual_delay += v;
+                }
 
-                    if actual_delay > 0 {
-                        thread::sleep(Duration::from_millis(actual_delay));
+                if actual_delay > 0 {
+                    let mut remaining = actual_delay;
+                    while remaining > 0 {
+                        state.wait_if_paused();
+                        let step = remaining.min(50);
+                        thread::sleep(Duration::from_millis(step));
+                        remaining -= step;
                     }
                 }
-                res
-            } else {
-                enigo.text(&text)
-            };
+            }
 
             if let Err(e) = result {
                 let err = e.to_string();
@@ -217,6 +297,7 @@ impl SharedState {
                 state.set_status(&state.t("status.input_complete"));
             }
 
+            *state.typing_paused.lock().unwrap() = false;
             *state.is_typing.lock().unwrap() = false;
         });
     }
@@ -294,6 +375,8 @@ impl CopyTypeApp {
         *state.typing_delay.lock().unwrap() = app_config.typing_delay;
         *state.typing_variance.lock().unwrap() = app_config.typing_variance;
         *state.typing_variance_enabled.lock().unwrap() = app_config.typing_variance_enabled;
+        *state.history_enabled.lock().unwrap() = app_config.history_enabled;
+        *state.history_max_items.lock().unwrap() = app_config.history_max_items;
 
         // 根据配置显示/隐藏控制台
         #[cfg(target_os = "windows")]
@@ -373,8 +456,21 @@ impl CopyTypeApp {
                     let current_id = *hotkey_state.hotkey_id.lock().unwrap();
                     if let Some(id) = current_id {
                         if event.id == id {
+                            if !hotkey_state.should_handle_hotkey() {
+                                continue;
+                            }
                             info!("{}", i18n_hotkey.t("log.hotkey_triggered"));
-                            hotkey_state.execute_typing();
+                            if hotkey_state.is_typing() {
+                                let paused = hotkey_state.toggle_typing_pause();
+                                if paused {
+                                    hotkey_state
+                                        .set_status(&i18n_hotkey.t("status.typing_paused"));
+                                } else {
+                                    hotkey_state.set_status(&i18n_hotkey.t("status.typing"));
+                                }
+                            } else {
+                                hotkey_state.execute_typing();
+                            }
                         }
                     }
                 }
@@ -576,7 +672,8 @@ impl CopyTypeApp {
                             debug!("{}", state.tr("log.clipboard_preview", &[("preview", preview.as_str())]));
 
                             *state.clipboard_text.lock().unwrap() = text.clone();
-                            *state.last_clipboard_text.lock().unwrap() = text;
+                            *state.last_clipboard_text.lock().unwrap() = text.clone();
+                            state.record_history(text);
                         }
                     }
                 }
@@ -969,6 +1066,23 @@ impl eframe::App for CopyTypeApp {
 
                         ui.label(egui::RichText::new(i18n.t("ui.app.typing_tip")).small().weak());
                     });
+
+                    ui.add_space(10.0);
+                    ui.label(i18n.t("ui.app.group_history_settings"));
+                    ui.group(|ui| {
+                        ui.checkbox(
+                            &mut self.temp_app_config.history_enabled,
+                            i18n.t("ui.app.checkbox_history_enabled"),
+                        );
+                        ui.horizontal(|ui| {
+                            ui.label(i18n.t("ui.app.label_history_max_items"));
+                            ui.add_enabled(
+                                self.temp_app_config.history_enabled,
+                                egui::Slider::new(&mut self.temp_app_config.history_max_items, 1..=100)
+                                    .text(i18n.t("ui.app.history_item_unit")),
+                            );
+                        });
+                    });
                     
                     #[cfg(target_os = "windows")]
                     {
@@ -997,12 +1111,22 @@ impl eframe::App for CopyTypeApp {
                                     }
                                 }
                             }
+
+                            self.temp_app_config.history_max_items =
+                                self.temp_app_config.history_max_items.clamp(1, 100);
                             
                             self.app_config = self.temp_app_config.clone();
                             // 更新 state 中的配置
                             *self.state.typing_delay.lock().unwrap() = self.app_config.typing_delay;
                             *self.state.typing_variance.lock().unwrap() = self.app_config.typing_variance;
                             *self.state.typing_variance_enabled.lock().unwrap() = self.app_config.typing_variance_enabled;
+                            *self.state.history_enabled.lock().unwrap() = self.app_config.history_enabled;
+                            *self.state.history_max_items.lock().unwrap() = self.app_config.history_max_items;
+                            if self.app_config.history_enabled {
+                                self.state.trim_history();
+                            } else {
+                                self.state.clear_history();
+                            }
                             self.i18n.set_language(&self.app_config.language);
                             
                             // 保存时包含当前的快捷键配置

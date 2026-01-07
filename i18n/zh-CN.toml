@@ -1,6 +1,7 @@
 [status]
 ready = "就绪"
 typing = "正在输入..."
+typing_paused = "已暂停输入，按快捷键继续"
 clipboard_empty = "剪贴板为空"
 input_init_error = "键盘模拟失败: %{err}"
 input_error = "输入失败: %{err}"
@@ -121,6 +122,10 @@ preset_slow = "慢速"
 typing_speed_infinite = "≈ 9999+ 字/分钟"
 typing_speed = "≈ %{cpm} 字/分钟"
 typing_tip = "增加随机偏差可以让输入更像人类，避免被反作弊检测。"
+group_history_settings = "历史记录设置:"
+checkbox_history_enabled = "保存剪贴板历史"
+label_history_max_items = "最多保存条数 (1-100):"
+history_item_unit = "条"
 checkbox_show_console = "显示调试控制台"
 label_restart_required = "需要重启程序生效"
 [permissions]

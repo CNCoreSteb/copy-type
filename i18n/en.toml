@@ -1,6 +1,7 @@
 [status]
 ready = "Ready"
 typing = "Typing..."
+typing_paused = "Typing paused, press the hotkey to resume"
 clipboard_empty = "Clipboard is empty"
 input_init_error = "Keyboard simulation failed: %{err}"
 input_error = "Input failed: %{err}"
@@ -121,6 +122,10 @@ preset_slow = "Slow"
 typing_speed_infinite = "≈ 9999+ chars/min"
 typing_speed = "≈ %{cpm} chars/min"
 typing_tip = "Adding variance makes typing look more human and may reduce anti-cheat detection."
+group_history_settings = "History settings:"
+checkbox_history_enabled = "Save clipboard history"
+label_history_max_items = "Max items (1-100):"
+history_item_unit = "items"
 checkbox_show_console = "Show debug console"
 label_restart_required = "Restart required to take effect"
 [permissions]

@@ -51,6 +51,12 @@ pub struct AppConfig {
     /// 是否启用随机偏差
     #[serde(default)]
     pub typing_variance_enabled: bool,
+    /// 是否保存剪贴板历史
+    #[serde(default)]
+    pub history_enabled: bool,
+    /// 剪贴板历史最多保存条数
+    #[serde(default = "default_history_max_items")]
+    pub history_max_items: u32,
     /// 快捷键配置
     #[serde(default)]
     pub hotkey: HotkeyConfig,
@@ -71,6 +77,10 @@ fn default_language() -> String {
     "zh-CN".to_string()
 }
 
+fn default_history_max_items() -> u32 {
+    20
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -81,6 +91,8 @@ impl Default for AppConfig {
             typing_delay: default_typing_delay(),
             typing_variance: default_typing_variance(),
             typing_variance_enabled: false,
+            history_enabled: false,
+            history_max_items: default_history_max_items(),
             hotkey: HotkeyConfig::default(),
             language: default_language(),
         }
@@ -95,10 +107,12 @@ impl AppConfig {
 
     /// 从文件加载配置
     pub fn load() -> Self {
-        Self::config_path()
+        let mut config = Self::config_path()
             .and_then(|path| fs::read_to_string(&path).ok())
-            .and_then(|content| serde_json::from_str(&content).ok())
-            .unwrap_or_default()
+            .and_then(|content| serde_json::from_str::<Self>(&content).ok())
+            .unwrap_or_default();
+        config.normalize();
+        config
     }
 
     /// 保存配置到文件
@@ -111,5 +125,13 @@ impl AppConfig {
             fs::write(&path, content)?;
         }
         Ok(())
+    }
+
+    fn normalize(&mut self) {
+        if self.history_max_items == 0 {
+            self.history_max_items = default_history_max_items();
+        } else if self.history_max_items > 100 {
+            self.history_max_items = 100;
+        }
     }
 }
