@@ -1,10 +1,9 @@
-name: Build and Release
+name: Release Build Only
 
+# 核心修改：只有在发布 Release (点击 Published) 时触发
 on: 
-  pull_request:
-    branches: [ "main" ]
   release:
-    types: [created, published]
+    types: [published]
 
 env:
   CARGO_TERM_COLOR: always
@@ -17,15 +16,15 @@ jobs:
       matrix: 
         include:
           - os: ubuntu-latest
-            target:  x86_64-unknown-linux-gnu
-            artifact_name:  copy-type
+            target: x86_64-unknown-linux-gnu
+            artifact_name: copy-type
             asset_name: copy-type-linux-x86_64
-          - os:  windows-latest
+          - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact_name:  copy-type.exe
+            artifact_name: copy-type.exe
             asset_name: copy-type-windows-x86_64.exe
           - os: macos-latest
-            target:  x86_64-apple-darwin
+            target: x86_64-apple-darwin
             artifact_name: copy-type
             asset_name: copy-type-macos-x86_64
           - os: macos-latest
@@ -34,7 +33,7 @@ jobs:
             asset_name: copy-type-macos-aarch64
 
     steps:
-    - uses:  actions/checkout@v4
+    - uses: actions/checkout@v4
     
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -43,7 +42,7 @@ jobs:
         target: ${{ matrix.target }}
     
     - name: Install Linux build deps
-      if: matrix. os == 'ubuntu-latest'
+      if: matrix.os == 'ubuntu-latest'
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -67,54 +66,50 @@ jobs:
           pkg-config
     
     - name: Build
-      run: cargo build --release --target ${{ matrix. target }} --verbose
+      run: cargo build --release --target ${{ matrix.target }} --verbose
     
     - name: Strip binary (Linux and macOS)
       if: matrix.os != 'windows-latest'
       run: strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
     
-    - name:  Rename binary
+    - name: Rename binary
+      shell: bash
       run: |
         mkdir -p artifacts
-        if [ "${{ matrix.os }}" = "windows-latest" ]; then
-          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}
-        else
-          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}
-        fi
-      shell: bash
+        cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}
     
+    # 将构建产物暂时上传，以便传给下一个 job
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with: 
-        name:  ${{ matrix.asset_name }}
+        name: ${{ matrix.asset_name }}
         path: artifacts/${{ matrix.asset_name }}
-        if-no-files-found:  error
+        if-no-files-found: error
 
-  release:
+  upload-to-release:
     needs: build
-    runs-on:  ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
+    runs-on: ubuntu-latest
     permissions: 
       contents: write
     
     steps:
     - uses: actions/checkout@v4
     
+    # 下载所有构建好的文件
     - name: Download all artifacts
       uses: actions/download-artifact@v4
       with: 
         path: artifacts
+        pattern: '*' # 下载所有名字的构件
+        merge-multiple: true # 将它们合并到同一个文件夹中，不要子文件夹
     
-    - name: Display structure of downloaded files
+    - name: List artifacts to be uploaded
       run: ls -R artifacts
     
-    - name: Create or Update Release
+    # 将文件上传到当前的 Release 页面
+    - name: Upload to Release
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
-        files: artifacts/**/*
-        draft: false
-        prerelease: false
-        generate_release_notes: true
+        files: artifacts/*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
