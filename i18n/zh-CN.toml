@@ -1,0 +1,177 @@
+[status]
+ready = "就绪"
+typing = "正在输入..."
+clipboard_empty = "剪贴板为空"
+input_init_error = "键盘模拟失败: %{err}"
+input_error = "输入失败: %{err}"
+input_complete = "输入完成"
+hotkey_registered = "快捷键已注册: %{hotkey}"
+hotkey_register_fail = "快捷键注册失败: %{err}"
+hotkey_manager_fail = "初始化快捷键管理器失败: %{err}"
+hotkey_updated = "快捷键已更新: %{hotkey}"
+clipboard_init_fail = "剪贴板初始化失败: %{err}"
+permissions_ok = "权限检查通过"
+cleared = "已清空"
+enabled = "程序已启用"
+disabled = "程序已禁用"
+
+[log]
+request_ignored_disabled = "程序已禁用，忽略输入请求"
+request_ignored_typing = "正在输入中，忽略此次请求"
+clipboard_empty = "剪贴板为空，无法输入"
+input_start = "开始模拟输入 (%{len} 字符, 延迟 %{delay}ms, 偏差 %{variance}ms, 启用偏差: %{variance_enabled})"
+input_init_error = "无法初始化键盘模拟: %{err}"
+input_error = "输入文本失败: %{err}"
+input_complete = "输入完成"
+hotkey_registered = "已注册快捷键: %{hotkey}"
+hotkey_register_fail = "注册快捷键失败: %{err}"
+hotkey_manager_fail = "初始化快捷键管理器失败: %{err}"
+hotkey_unregistered = "已注销旧快捷键"
+hotkey_updated = "已注册新快捷键: %{hotkey}"
+save_config_fail = "保存配置失败: %{err}"
+clipboard_init_fail = "无法初始化剪贴板: %{err}"
+clipboard_monitor_started = "剪贴板监控已启动"
+clipboard_changed = "检测到新的剪贴板内容 (%{len} 字符)"
+tray_event = "后台线程: 收到托盘事件 %{id}"
+hotkey_triggered = "后台线程: 检测到快捷键触发"
+permission_issue = "权限检查发现问题: %{issues}"
+tray_event_received = "收到托盘菜单事件 #%{count}: id=%{id}"
+tray_match_id = "匹配菜单ID: '%{id}'"
+tray_exec_show = "执行: 显示窗口"
+tray_exec_toggle = "执行: 切换状态为 %{state}"
+tray_exec_exit = "执行: 退出程序"
+tray_unknown_id = "收到未知的托盘菜单ID: '%{id}'"
+tray_processed_count = "本轮处理了 %{count} 个托盘事件"
+
+[ui]
+title_permission_warning = "⚠️ 权限警告"
+label_permission_issues = "检测到以下权限问题："
+label_fix_suggestions = "查看修复建议"
+button_acknowledge = "我知道了，继续使用"
+button_exit = "退出程序"
+menu_file = "文件"
+menu_minimize_to_tray = "最小化到托盘"
+menu_exit = "退出"
+menu_settings = "设置"
+menu_hotkey_settings = "快捷键设置"
+menu_app_settings = "应用设置"
+menu_help = "帮助"
+menu_check_permissions = "检查权限"
+label_status = "状态: %{status}"
+label_permission_problem = "⚠️ 权限问题"
+title_main = "Copy-Type"
+label_app_status = "程序状态:"
+label_enabled = "✅ 已启用"
+label_disabled = "❌ 已禁用"
+label_current_hotkey = "当前快捷键:"
+button_modify = "修改"
+label_waiting_text = "等待输入的文本:"
+label_empty = "(空)"
+label_char_count = "字符数: %{count}"
+label_line_count = "行数: %{count}"
+button_manual_type = "▶ 手动输入"
+button_clear = "🗑 清空"
+label_modifiers = "修饰键:"
+label_keys = "按键:"
+label_preview = "预览:"
+button_save = "保存"
+button_cancel = "取消"
+window_hotkey_settings = "快捷键设置"
+window_app_settings = "应用设置"
+
+[tray]
+menu_show = "显示窗口"
+menu_toggle = "启用/禁用"
+menu_exit = "退出"
+tooltip = "Copy-Type - 剪贴板模拟输入"
+
+[tray.log]
+add_show_fail = "添加显示菜单项失败: %{err}"
+add_toggle_fail = "添加切换菜单项失败: %{err}"
+add_sep_fail = "添加分隔符失败: %{err}"
+add_exit_fail = "添加退出菜单项失败: %{err}"
+menu_created = "托盘菜单已创建，包含 %{count} 个菜单项"
+created = "系统托盘已创建"
+create_fail = "创建系统托盘失败: %{err}"
+
+[common]
+enabled = "启用"
+disabled = "禁用"
+
+[ui.app]
+label_close_window_action = "关闭窗口时:"
+close_action_minimize_to_tray = "最小化到托盘"
+close_action_exit = "退出程序"
+checkbox_start_minimized = "启动时最小化到托盘"
+group_typing_settings = "模拟输入设置:"
+label_base_delay_ms = "基础延迟 (毫秒):"
+label_variance_ms = "随机偏差 (毫秒):"
+label_presets = "预设:"
+preset_ultra = "极速"
+preset_fast = "快速"
+preset_normal = "正常"
+preset_slow = "慢速"
+typing_speed_infinite = "≈ 9999+ 字/分钟"
+typing_speed = "≈ %{cpm} 字/分钟"
+typing_tip = "增加随机偏差可以让输入更像人类，避免被反作弊检测。"
+checkbox_show_console = "显示调试控制台"
+label_restart_required = "需要重启程序生效"
+
+[status]
+app_settings_saved = "应用设置已保存"
+
+[log]
+hotkey_unregister_fail = "注销旧快捷键失败: %{err}"
+clipboard_preview = "内容预览: %{preview}"
+save_app_config_fail = "保存应用配置失败: %{err}"
+window_minimized_to_tray = "窗口已最小化到托盘"
+app_exit = "程序退出"
+
+[permissions]
+warn_keyboard = "• 键盘模拟权限不足：程序可能无法正常输入文字"
+warn_clipboard = "• 剪贴板访问权限不足：程序可能无法读取复制的内容"
+
+[permissions.windows]
+not_admin = "程序未以管理员权限运行"
+enigo_ok = "键盘模拟初始化成功"
+enigo_fail = "键盘模拟初始化失败: %{err}"
+enigo_fail_issue = "键盘模拟器初始化失败: %{err}"
+
+[permissions.macos]
+accessibility_granted = "辅助功能权限已授予"
+accessibility_denied = "辅助功能权限未授予: %{err}"
+accessibility_fix = "请在「系统偏好设置」→「安全性与隐私」→「隐私」→「辅助功能」中授权本应用"
+
+[permissions.linux]
+keyboard_ok = "键盘模拟权限正常"
+keyboard_denied = "键盘模拟权限不足: %{err}"
+add_to_input_group = "可能需要将用户添加到 input 组：sudo usermod -a -G input $USER"
+
+[permissions.fix]
+windows = """修复建议：
+
+1. 确保没有安全软件阻止本程序
+2. 尝试以管理员身份运行程序
+3. 检查 Windows 安全中心是否有相关警告
+4. 如果问题持续，请尝试重新安装程序
+"""
+macos = """修复建议：
+
+1. 打开「系统偏好设置」
+2. 进入「安全性与隐私」→「隐私」
+3. 在左侧选择「辅助功能」
+4. 点击左下角的锁图标解锁
+5. 勾选 Copy-Type 应用程序
+6. 重新启动本程序
+"""
+linux = """修复建议：
+
+1. 将当前用户添加到 input 组：
+	sudo usermod -a -G input $USER
+
+2. 注销并重新登录
+
+3. 如果使用 Wayland，可能需要额外配置：
+	- 某些 Wayland 环境可能不支持全局键盘模拟
+	- 考虑切换到 X11 会话
+"""

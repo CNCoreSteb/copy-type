@@ -1,0 +1,177 @@
+[status]
+ready = "Ready"
+typing = "Typing..."
+clipboard_empty = "Clipboard is empty"
+input_init_error = "Keyboard simulation failed: %{err}"
+input_error = "Input failed: %{err}"
+input_complete = "Input complete"
+hotkey_registered = "Hotkey registered: %{hotkey}"
+hotkey_register_fail = "Hotkey registration failed: %{err}"
+hotkey_manager_fail = "Failed to initialize hotkey manager: %{err}"
+hotkey_updated = "Hotkey updated: %{hotkey}"
+clipboard_init_fail = "Clipboard initialization failed: %{err}"
+permissions_ok = "Permissions check passed"
+cleared = "Cleared"
+enabled = "Program enabled"
+disabled = "Program disabled"
+
+[log]
+request_ignored_disabled = "Program disabled, ignoring input request"
+request_ignored_typing = "Typing in progress, ignoring this request"
+clipboard_empty = "Clipboard is empty, cannot type"
+input_start = "Starting simulation (%{len} chars, delay %{delay}ms, variance %{variance}ms, variance enabled: %{variance_enabled})"
+input_init_error = "Failed to initialize keyboard simulation: %{err}"
+input_error = "Failed to type text: %{err}"
+input_complete = "Typing complete"
+hotkey_registered = "Registered hotkey: %{hotkey}"
+hotkey_register_fail = "Failed to register hotkey: %{err}"
+hotkey_manager_fail = "Failed to initialize hotkey manager: %{err}"
+hotkey_unregistered = "Unregistered old hotkey"
+hotkey_updated = "Registered new hotkey: %{hotkey}"
+save_config_fail = "Failed to save config: %{err}"
+clipboard_init_fail = "Failed to initialize clipboard: %{err}"
+clipboard_monitor_started = "Clipboard monitor started"
+clipboard_changed = "Detected new clipboard content (%{len} chars)"
+tray_event = "Background thread: Received tray event %{id}"
+hotkey_triggered = "Background thread: Hotkey triggered"
+permission_issue = "Permissions check found issues: %{issues}"
+tray_event_received = "Received tray menu event #%{count}: id=%{id}"
+tray_match_id = "Matching menu ID: '%{id}'"
+tray_exec_show = "Execute: Show Window"
+tray_exec_toggle = "Execute: Toggle state to %{state}"
+tray_exec_exit = "Execute: Exit Program"
+tray_unknown_id = "Received unknown tray menu ID: '%{id}'"
+tray_processed_count = "Processed %{count} tray events in this round"
+
+[ui]
+title_permission_warning = "⚠️ Permission Warning"
+label_permission_issues = "The following permission issues were detected:"
+label_fix_suggestions = "View Fix Suggestions"
+button_acknowledge = "I understand, continue"
+button_exit = "Exit Program"
+menu_file = "File"
+menu_minimize_to_tray = "Minimize to Tray"
+menu_exit = "Exit"
+menu_settings = "Settings"
+menu_hotkey_settings = "Hotkey Settings"
+menu_app_settings = "App Settings"
+menu_help = "Help"
+menu_check_permissions = "Check Permissions"
+label_status = "Status: %{status}"
+label_permission_problem = "⚠️ Permission Issue"
+title_main = "Copy-Type"
+label_app_status = "Status:"
+label_enabled = "✅ Enabled"
+label_disabled = "❌ Disabled"
+label_current_hotkey = "Current Hotkey:"
+button_modify = "Modify"
+label_waiting_text = "Text to type:"
+label_empty = "(Empty)"
+label_char_count = "Chars: %{count}"
+label_line_count = "Lines: %{count}"
+button_manual_type = "▶ Manual Type"
+button_clear = "🗑 Clear"
+label_modifiers = "Modifiers:"
+label_keys = "Keys:"
+label_preview = "Preview:"
+button_save = "Save"
+button_cancel = "Cancel"
+window_hotkey_settings = "Hotkey Settings"
+window_app_settings = "App Settings"
+
+[tray]
+menu_show = "Show Window"
+menu_toggle = "Enable/Disable"
+menu_exit = "Exit"
+tooltip = "Copy-Type - Clipboard Simulation"
+
+[tray.log]
+add_show_fail = "Failed to add Show menu item: %{err}"
+add_toggle_fail = "Failed to add Toggle menu item: %{err}"
+add_sep_fail = "Failed to add separator: %{err}"
+add_exit_fail = "Failed to add Exit menu item: %{err}"
+menu_created = "Tray menu created with %{count} items"
+created = "System tray created"
+create_fail = "Failed to create system tray: %{err}"
+
+[common]
+enabled = "Enabled"
+disabled = "Disabled"
+
+[ui.app]
+label_close_window_action = "On close:"
+close_action_minimize_to_tray = "Minimize to Tray"
+close_action_exit = "Exit Program"
+checkbox_start_minimized = "Start minimized to tray"
+group_typing_settings = "Typing settings:"
+label_base_delay_ms = "Base delay (ms):"
+label_variance_ms = "Random variance (ms):"
+label_presets = "Presets:"
+preset_ultra = "Ultra"
+preset_fast = "Fast"
+preset_normal = "Normal"
+preset_slow = "Slow"
+typing_speed_infinite = "≈ 9999+ chars/min"
+typing_speed = "≈ %{cpm} chars/min"
+typing_tip = "Adding variance makes typing look more human and may reduce anti-cheat detection."
+checkbox_show_console = "Show debug console"
+label_restart_required = "Restart required to take effect"
+
+[status]
+app_settings_saved = "App settings saved"
+
+[log]
+hotkey_unregister_fail = "Failed to unregister old hotkey: %{err}"
+clipboard_preview = "Preview: %{preview}"
+save_app_config_fail = "Failed to save app config: %{err}"
+window_minimized_to_tray = "Window minimized to tray"
+app_exit = "Program exit"
+
+[permissions]
+warn_keyboard = "• Keyboard simulation permission is insufficient: typing may not work"
+warn_clipboard = "• Clipboard access permission is insufficient: clipboard may not be readable"
+
+[permissions.windows]
+not_admin = "Program is not running as administrator"
+enigo_ok = "Keyboard simulation initialized successfully"
+enigo_fail = "Keyboard simulation initialization failed: %{err}"
+enigo_fail_issue = "Keyboard simulator initialization failed: %{err}"
+
+[permissions.macos]
+accessibility_granted = "Accessibility permission granted"
+accessibility_denied = "Accessibility permission not granted: %{err}"
+accessibility_fix = "Authorize this app in System Settings → Security & Privacy → Privacy → Accessibility"
+
+[permissions.linux]
+keyboard_ok = "Keyboard simulation permission OK"
+keyboard_denied = "Keyboard simulation permission insufficient: %{err}"
+add_to_input_group = "You may need to add your user to the input group: sudo usermod -a -G input $USER"
+
+[permissions.fix]
+windows = """Fix suggestions:
+
+1. Ensure no security software is blocking this app
+2. Try running the program as administrator
+3. Check Windows Security for related warnings
+4. If the issue persists, try reinstalling the program
+"""
+macos = """Fix suggestions:
+
+1. Open System Settings
+2. Go to Security & Privacy → Privacy
+3. Select Accessibility on the left
+4. Unlock with the lock icon
+5. Enable the Copy-Type app
+6. Restart this program
+"""
+linux = """Fix suggestions:
+
+1. Add the current user to the input group:
+	sudo usermod -a -G input $USER
+
+2. Log out and log back in
+
+3. If you are using Wayland, extra setup may be required:
+	- Some Wayland environments may not support global keyboard simulation
+	- Consider switching to an X11 session
+"""
