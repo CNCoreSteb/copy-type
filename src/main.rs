@@ -668,7 +668,13 @@ impl CopyTypeApp {
                                 "{}",
                                 state.tr("log.clipboard_changed", &[("len", len_str.as_str())])
                             );
-                            let preview = truncate_text(&text, 50);
+                            
+                            // 安全地生成预览，如果 truncate_text panic 就用简单方式
+                            let preview = std::panic::catch_unwind(|| truncate_text(&text, 50))
+                                .unwrap_or_else(|_| {
+                                    error!("truncate_text 发生错误，使用简单截断");
+                                    text.chars().take(50).collect::<String>() + "..."
+                                });
                             debug!("{}", state.tr("log.clipboard_preview", &[("preview", preview.as_str())]));
 
                             *state.clipboard_text.lock().unwrap() = text.clone();
@@ -1413,9 +1419,16 @@ fn truncate_text(text: &str, max_len: usize) -> String {
     if text.len() <= max_len {
         text.replace('\n', "\\n").replace('\r', "\\r")
     } else {
+        // 找到安全的字符边界进行截断
+        let truncate_pos = text.char_indices()
+            .take_while(|(idx, _)| *idx < max_len)
+            .last()
+            .map(|(idx, ch)| idx + ch.len_utf8())
+            .unwrap_or(0);
+        
         format!(
             "{}...",
-            text[..max_len].replace('\n', "\\n").replace('\r', "\\r")
+            text[..truncate_pos].replace('\n', "\\n").replace('\r', "\\r")
         )
     }
 }
