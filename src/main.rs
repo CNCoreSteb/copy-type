@@ -663,26 +663,23 @@ impl CopyTypeApp {
                         let last = state.last_clipboard_text.lock().unwrap().clone();
 
                         if text != last && !text.is_empty() {
-                            // 使用 catch_unwind 捕获 panic，防止线程崩溃
-                            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                let len_str = text.len().to_string();
-                                info!(
-                                    "{}",
-                                    state.tr("log.clipboard_changed", &[("len", len_str.as_str())])
-                                );
-                                let preview = truncate_text(&text, 50);
-                                debug!("{}", state.tr("log.clipboard_preview", &[("preview", preview.as_str())]));
-
-                                *state.clipboard_text.lock().unwrap() = text.clone();
-                                *state.last_clipboard_text.lock().unwrap() = text.clone();
-                                state.record_history(text.clone());
-                            }));
+                            let len_str = text.len().to_string();
+                            info!(
+                                "{}",
+                                state.tr("log.clipboard_changed", &[("len", len_str.as_str())])
+                            );
                             
-                            if let Err(e) = result {
-                                error!("剪贴板处理出错: {:?}", e);
-                                // 出错后仍然更新 last_clipboard_text，避免重复尝试处理同一内容
-                                *state.last_clipboard_text.lock().unwrap() = text;
-                            }
+                            // 安全地生成预览，如果 truncate_text panic 就用简单方式
+                            let preview = std::panic::catch_unwind(|| truncate_text(&text, 50))
+                                .unwrap_or_else(|_| {
+                                    error!("truncate_text 发生错误，使用简单截断");
+                                    text.chars().take(50).collect::<String>() + "..."
+                                });
+                            debug!("{}", state.tr("log.clipboard_preview", &[("preview", preview.as_str())]));
+
+                            *state.clipboard_text.lock().unwrap() = text.clone();
+                            *state.last_clipboard_text.lock().unwrap() = text.clone();
+                            state.record_history(text);
                         }
                     }
                 }
