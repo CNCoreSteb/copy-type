@@ -215,8 +215,8 @@ impl SharedState {
         let variance_enabled = *self.typing_variance_enabled.lock().unwrap();
 
         thread::spawn(move || {
-            // 稍微延迟，让用户松开快捷键
-            thread::sleep(Duration::from_millis(150));
+            // 延迟输入，防止还未松开快捷键
+            thread::sleep(Duration::from_millis(250));
 
             let text = state.clipboard_text.lock().unwrap().clone();
 
