@@ -1,4 +1,4 @@
-# Copy-Type
+# Copy&Type
 
 [English](README_en.md) | 中文
 

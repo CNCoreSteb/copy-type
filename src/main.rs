@@ -1463,7 +1463,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "Copy-Type",
+        "Copy&Type",
         options,
         Box::new(|cc| Ok(Box::new(CopyTypeApp::new(cc)))),
     )

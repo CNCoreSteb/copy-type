@@ -66,7 +66,7 @@ menu_help = "帮助"
 menu_check_permissions = "检查权限"
 label_status = "状态: %{status}"
 label_permission_problem = "⚠️ 权限问题"
-title_main = "Copy-Type"
+title_main = "Copy&Type"
 label_app_status = "程序状态:"
 label_enabled = "✅ 已启用"
 label_disabled = "❌ 已禁用"
@@ -90,7 +90,7 @@ window_app_settings = "应用设置"
 menu_show = "显示窗口"
 menu_toggle = "启用/禁用"
 menu_exit = "退出"
-tooltip = "Copy-Type - 剪贴板模拟输入"
+tooltip = "Copy&Type - 剪贴板模拟输入"
 
 [tray.log]
 add_show_fail = "添加显示菜单项失败: %{err}"
@@ -162,7 +162,7 @@ macos = """修复建议：
 2. 进入「安全性与隐私」→「隐私」
 3. 在左侧选择「辅助功能」
 4. 点击左下角的锁图标解锁
-5. 勾选 Copy-Type 应用程序
+5. 勾选 Copy&Type 应用程序
 6. 重新启动本程序
 """
 linux = """修复建议：

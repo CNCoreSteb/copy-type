@@ -66,7 +66,7 @@ menu_help = "Help"
 menu_check_permissions = "Check Permissions"
 label_status = "Status: %{status}"
 label_permission_problem = "⚠️ Permission Issue"
-title_main = "Copy-Type"
+title_main = "Copy&Type"
 label_app_status = "Status:"
 label_enabled = "✅ Enabled"
 label_disabled = "❌ Disabled"
@@ -90,7 +90,7 @@ window_app_settings = "App Settings"
 menu_show = "Show Window"
 menu_toggle = "Enable/Disable"
 menu_exit = "Exit"
-tooltip = "Copy-Type - Clipboard Simulation"
+tooltip = "Copy&Type - Clipboard Simulation"
 
 [tray.log]
 add_show_fail = "Failed to add Show menu item: %{err}"
@@ -162,7 +162,7 @@ macos = """Fix suggestions:
 2. Go to Security & Privacy → Privacy
 3. Select Accessibility on the left
 4. Unlock with the lock icon
-5. Enable the Copy-Type app
+5. Enable the Copy&Type app
 6. Restart this program
 """
 linux = """Fix suggestions:
