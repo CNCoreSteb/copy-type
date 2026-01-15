@@ -1,9 +1,9 @@
-//! 快捷键配置模块
+//! 快捷键配置
 
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use serde::{Deserialize, Serialize};
 
-/// 支持的按键
+/// 支持的按键列表
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KeyCode {
     A,
@@ -265,6 +265,20 @@ impl Default for HotkeyConfig {
 }
 
 impl HotkeyConfig {
+    
+    /// 检查快捷键冲突
+    pub fn conflicts_with(&self, other: &HotkeyConfig) -> bool {
+        self.ctrl == other.ctrl
+            && self.shift == other.shift
+            && self.alt == other.alt
+            && self.meta == other.meta
+            && self.key == other.key
+    }
+
+    /// 检查快捷键是否有效
+    pub fn is_valid(&self) -> bool {
+        self.ctrl || self.shift || self.alt || self.meta
+    }
 
     /// 显示快捷键组合
     pub fn display(&self) -> String {

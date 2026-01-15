@@ -329,6 +329,12 @@ struct CopyTypeApp {
     show_app_settings: bool,
     /// 显示权限警告
     show_permission_warning: bool,
+    /// 快捷键注册错误信息
+    hotkey_register_error: Option<String>,
+    /// 显示启动时快捷键错误弹窗
+    show_startup_hotkey_error: bool,
+    /// 启动时快捷键错误信息
+    startup_hotkey_error: Option<String>,
     /// 权限状态
     permission_status: PermissionStatus,
     /// 系统托盘上下文，必须保持活跃
@@ -490,6 +496,9 @@ impl CopyTypeApp {
             show_hotkey_settings: false,
             show_app_settings: false,
             show_permission_warning,
+            hotkey_register_error: None,
+            show_startup_hotkey_error: false,
+            startup_hotkey_error: None,
             permission_status,
             tray_context,
         };
@@ -536,6 +545,7 @@ impl CopyTypeApp {
                         }
                         Err(e) => {
                             let err = e.to_string();
+                            let display = self.hotkey_config.display();
                             error!(
                                 "{}",
                                 self.i18n
@@ -546,6 +556,14 @@ impl CopyTypeApp {
                                     .i18n
                                     .tr("status.hotkey_register_fail", &[("err", err.as_str())]),
                             );
+                            // 保存用户友好的错误信息
+                            let friendly_error = if err.contains("already register") {
+                                self.i18n.t("ui.error_hotkey_already_registered")
+                            } else {
+                                self.i18n.tr("ui.error_hotkey_register_failed", &[("error", err.as_str())])
+                            };
+                            self.startup_hotkey_error = Some(format!("{} - {}", display, friendly_error));
+                            self.show_startup_hotkey_error = true;
                         }
                     }
                 }
@@ -564,40 +582,40 @@ impl CopyTypeApp {
                             .i18n
                             .tr("status.hotkey_manager_fail", &[("err", err.as_str())]),
                     );
+                // 保存用户友好的错误信息
+                self.startup_hotkey_error = Some(self.i18n.t("ui.error_hotkey_manager_init_failed"));
+                self.show_startup_hotkey_error = true;
             }
         }
     }
 
     /// 更新快捷键
     fn update_hotkey(&mut self) {
-        // 先注销旧的快捷键
-        if let (Some(manager), Some(old_hotkey)) = (&self.hotkey_manager, self.current_hotkey) {
-            if let Err(e) = manager.unregister(old_hotkey) {
-                let err = e.to_string();
-                warn!(
-                    "{}",
-                    self.i18n
-                        .tr("log.hotkey_unregister_fail", &[("err", err.as_str())])
-                );
-            } else {
-                info!("{}", self.i18n.t("log.hotkey_unregistered"));
-            }
-            self.current_hotkey_id = None;
-            self.current_hotkey = None;
-            *self.state.hotkey_id.lock().unwrap() = None;
-        }
-
-        // 更新配置
-        self.hotkey_config = self.temp_hotkey_config.clone();
-
-        // 注册新的快捷键
+        // 先尝试注册新的快捷键（不注销旧的）
         if let Some(manager) = &self.hotkey_manager {
-            if let Some(new_hotkey) = self.hotkey_config.to_global_hotkey() {
+            if let Some(new_hotkey) = self.temp_hotkey_config.to_global_hotkey() {
                 match manager.register(new_hotkey) {
                     Ok(()) => {
+                        // 注册成功，现在注销旧的快捷键
+                        if let Some(old_hotkey) = self.current_hotkey {
+                            if let Err(e) = manager.unregister(old_hotkey) {
+                                let err = e.to_string();
+                                warn!(
+                                    "{}",
+                                    self.i18n
+                                        .tr("log.hotkey_unregister_fail", &[("err", err.as_str())])
+                                );
+                            } else {
+                                info!("{}", self.i18n.t("log.hotkey_unregistered"));
+                            }
+                        }
+
+                        // 更新配置
+                        self.hotkey_config = self.temp_hotkey_config.clone();
                         self.current_hotkey_id = Some(new_hotkey.id());
                         self.current_hotkey = Some(new_hotkey);
                         *self.state.hotkey_id.lock().unwrap() = Some(new_hotkey.id());
+                        
                         let display = self.hotkey_config.display();
                         info!(
                             "{}",
@@ -620,19 +638,25 @@ impl CopyTypeApp {
                                     .tr("log.save_config_fail", &[("err", err.as_str())])
                             );
                         }
+
+                        // 清除错误信息
+                        self.hotkey_register_error = None;
                     }
                     Err(e) => {
+                        // 注册失败，保存错误信息
                         let err = e.to_string();
                         error!(
                             "{}",
                             self.i18n
                                 .tr("log.hotkey_register_fail", &[("err", err.as_str())])
                         );
-                        self.state.set_status(
-                            &self
-                                .i18n
-                                .tr("status.hotkey_register_fail", &[("err", err.as_str())]),
-                        );
+                        // 保存用户友好的错误信息
+                        let friendly_error = if err.contains("already register") {
+                            self.i18n.t("ui.error_hotkey_already_registered")
+                        } else {
+                            err
+                        };
+                        self.hotkey_register_error = Some(friendly_error);
                     }
                 }
             }
@@ -741,6 +765,42 @@ impl eframe::App for CopyTypeApp {
                         if ui.button(i18n.t("ui.button_exit")).clicked() {
                             self.state.request_exit.store(true, Ordering::SeqCst);
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    });
+                });
+        }
+
+        // 启动时快捷键错误警告窗口
+        if self.show_startup_hotkey_error {
+            egui::Window::new(i18n.t("ui.title_hotkey_error"))
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(i18n.t("ui.label_hotkey_conflict_startup"));
+                    ui.add_space(10.0);
+
+                    if let Some(error) = &self.startup_hotkey_error {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 100, 100),
+                            error
+                        );
+                    }
+
+                    ui.add_space(10.0);
+                    ui.label(i18n.t("ui.label_hotkey_conflict_suggestion"));
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button(i18n.t("ui.button_open_settings")).clicked() {
+                            self.show_startup_hotkey_error = false;
+                            self.show_hotkey_settings = true;
+                            self.temp_hotkey_config = self.hotkey_config.clone();
+                        }
+                        if ui.button(i18n.t("ui.button_acknowledge")).clicked() {
+                            self.show_startup_hotkey_error = false;
                         }
                     });
                 });
@@ -950,15 +1010,52 @@ impl eframe::App for CopyTypeApp {
                     });
 
                     ui.add_space(10.0);
+
+                    // 验证快捷键
+                    let is_valid = self.temp_hotkey_config.is_valid();
+                    let is_same = self.temp_hotkey_config.conflicts_with(&self.hotkey_config);
+                    let can_save = is_valid && !is_same;
+
+                    // 显示警告
+                    if !is_valid {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 100, 100),
+                            format!("⚠ {}", i18n.t("ui.error_no_modifier_key"))
+                        );
+                        ui.add_space(10.0);
+                    } else if is_same {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 165, 0),
+                            format!("⚠ {}", i18n.t("ui.warning_same_hotkey"))
+                        );
+                        ui.add_space(10.0);
+                    }
+
+                    // 显示注册错误（如果有）
+                    if let Some(error) = &self.hotkey_register_error {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 100, 100),
+                            format!("⚠ {}: {}", i18n.t("ui.error_hotkey_conflict"), error)
+                        );
+                        ui.add_space(10.0);
+                    }
+
                     ui.separator();
                     ui.add_space(10.0);
 
                     ui.horizontal(|ui| {
-                        if ui.button(i18n.t("ui.button_save")).clicked() {
-                            self.update_hotkey();
-                            self.show_hotkey_settings = false;
-                        }
+                        // 如果无效或相同，禁用保存按钮
+                        ui.add_enabled_ui(can_save, |ui| {
+                            if ui.button(i18n.t("ui.button_save")).clicked() {
+                                self.update_hotkey();
+                                // 只有在没有错误时才关闭窗口
+                                if self.hotkey_register_error.is_none() {
+                                    self.show_hotkey_settings = false;
+                                }
+                            }
+                        });
                         if ui.button(i18n.t("ui.button_cancel")).clicked() {
+                            self.hotkey_register_error = None;
                             self.show_hotkey_settings = false;
                         }
                     });
