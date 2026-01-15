@@ -357,7 +357,7 @@ struct TrayContext {
 }
 
 impl CopyTypeApp {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, icon: tray_icon::Icon) -> Self {
         // 设置中文字体
         setup_fonts(&cc.egui_ctx);
 
@@ -395,7 +395,7 @@ impl CopyTypeApp {
         }
 
         // 创建系统托盘，并保存上下文
-        let tray_context = create_tray_context(&i18n);
+        let tray_context = create_tray_context(&i18n, icon);
         
         let window_hwnd = get_window_hwnd(cc);
         let ctx_clone = cc.egui_ctx.clone();
@@ -1377,7 +1377,7 @@ fn hide_console_window() {
 }
 
 /// 创建系统托盘图标
-fn create_tray_context(i18n: &I18n) -> Option<TrayContext> {
+fn create_tray_context(i18n: &I18n, icon: tray_icon::Icon) -> Option<TrayContext> {
     // 创建托盘菜单
     let menu = Menu::new();
 
@@ -1418,8 +1418,6 @@ fn create_tray_context(i18n: &I18n) -> Option<TrayContext> {
         i18n.tr("tray.log.menu_created", &[("count", "3")])
     );
 
-    // 创建托盘图标（使用默认图标）
-    let icon = create_default_icon();
     let tooltip = i18n.t("tray.tooltip");
 
     match TrayIconBuilder::new()
@@ -1487,28 +1485,30 @@ fn show_main_window(ctx: &egui::Context, window_hwnd: Option<isize>) {
     ctx.request_repaint();
 }
 
-/// 创建默认托盘图标
-fn create_default_icon() -> tray_icon::Icon {
-    // 创建一个简单的 16x16 图标
-    let size = 16u32;
-    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
+/// 加载应用图标
+fn load_icon() -> (tray_icon::Icon, Option<egui::IconData>) {
+    let icon_data = include_bytes!("logo.png");
+    
+    // 加载图片
+    let image = image::load_from_memory(icon_data)
+        .expect("Failed to load icon data")
+        .into_rgba8();
+    
+    let (width, height) = image.dimensions();
+    let rgba = image.into_raw();
 
-    for y in 0..size {
-        for x in 0..size {
-            // 创建一个简单的渐变图标
-            let r = ((x as f32 / size as f32) * 100.0 + 100.0) as u8;
-            let g = ((y as f32 / size as f32) * 100.0 + 100.0) as u8;
-            let b = 200u8;
-            let a = 255u8;
+    // 创建托盘图标
+    let tray_icon = tray_icon::Icon::from_rgba(rgba.clone(), width, height)
+        .expect("Failed to create tray icon");
 
-            rgba.push(r);
-            rgba.push(g);
-            rgba.push(b);
-            rgba.push(a);
-        }
-    }
+    // 创建窗口图标
+    let window_icon = egui::IconData {
+        rgba,
+        width,
+        height,
+    };
 
-    tray_icon::Icon::from_rgba(rgba, size, size).expect("Failed to create icon")
+    (tray_icon, Some(window_icon))
 }
 
 /// 截断文本用于日志显示
@@ -1552,16 +1552,20 @@ fn main() -> eframe::Result<()> {
         );
     }
 
+    // 加载图标
+    let (tray_icon, window_icon) = load_icon();
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([400.0, 500.0])
-            .with_min_inner_size([350.0, 400.0]),
+            .with_min_inner_size([350.0, 400.0])
+            .with_icon(window_icon.unwrap()),
         ..Default::default()
     };
 
     eframe::run_native(
         "Copy&Type",
         options,
-        Box::new(|cc| Ok(Box::new(CopyTypeApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(CopyTypeApp::new(cc, tray_icon)))),
     )
 }
