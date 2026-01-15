@@ -115,6 +115,9 @@ sudo dnf install libX11-devel libxcb-devel
 
 本人为Rust新的不能再新的新手，本项目在最初仅为个人日常使用目的开发，且鉴于项目并不大，难免过度依赖AI的辅助和编码。但所有代码均经过本人审核和测试，确保符合预期功能，如有Rust大佬，欢迎提交PR。
 
+![](https://img.shields.io/badge/Claude%20Assisted-100%25-00a67d?logo=anthropic)
+![](https://img.shields.io/badge/Gemini%20Assisted-100%25-00a67d?logo=googlegemini)
+
 ## 许可证
 
 GPL-3.0 License

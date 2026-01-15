@@ -14,6 +14,7 @@ const MAX_TOTAL_MEMORY: usize = 50 * 1024 * 1024;
 
 use app_config::{AppConfig, CloseAction};
 use arboard::Clipboard;
+use chrono::Local;
 use eframe::egui;
 use enigo::{Enigo, Keyboard, Settings};
 use global_hotkey::{hotkey::HotKey, GlobalHotKeyEvent, GlobalHotKeyManager};
@@ -40,6 +41,21 @@ const MENU_SHOW: &str = "show";
 const MENU_TOGGLE: &str = "toggle";
 const MENU_EXIT: &str = "exit";
 
+#[derive(Clone)]
+struct HistoryItem {
+    text: String,
+    copied_at: String,
+}
+
+impl HistoryItem {
+    fn new(text: String) -> Self {
+        Self {
+            text,
+            copied_at: format_history_timestamp(),
+        }
+    }
+}
+
 /// 共享应用状态
 #[derive(Clone)]
 struct SharedState {
@@ -48,7 +64,7 @@ struct SharedState {
     /// 上一次的剪贴板文本（用于检测变化）
     last_clipboard_text: Arc<Mutex<String>>,
     /// 剪贴板历史记录
-    clipboard_history: Arc<Mutex<Vec<String>>>,
+    clipboard_history: Arc<Mutex<Vec<HistoryItem>>>,
     /// 剪贴板历史记录占用的总内存（字节）
     history_memory_used: Arc<Mutex<usize>>,
     /// 是否保存剪贴板历史
@@ -198,7 +214,7 @@ impl SharedState {
         // 如果新增后总内存超过50MB，删除最旧的记录直到能够放下
         while *memory_used + text_size > MAX_TOTAL_MEMORY && !history.is_empty() {
             let removed = history.remove(0);
-            let removed_size = removed.len();
+            let removed_size = removed.text.len();
             *memory_used = memory_used.saturating_sub(removed_size);
             debug!(
                 "{}",
@@ -213,14 +229,14 @@ impl SharedState {
         }
         
         // 添加新记录
-        history.push(text);
+        history.push(HistoryItem::new(text));
         *memory_used += text_size;
         
         // 检查是否超出条数限制
         if history.len() > max_items as usize {
             let overflow = history.len() - max_items as usize;
             for item in history.drain(0..overflow) {
-                *memory_used = memory_used.saturating_sub(item.len());
+                *memory_used = memory_used.saturating_sub(item.text.len());
             }
         }
         
@@ -252,7 +268,7 @@ impl SharedState {
         if history.len() > max_items as usize {
             let overflow = history.len() - max_items as usize;
             for item in history.drain(0..overflow) {
-                *memory_used = memory_used.saturating_sub(item.len());
+                *memory_used = memory_used.saturating_sub(item.text.len());
             }
         }
     }
@@ -978,25 +994,58 @@ impl eframe::App for CopyTypeApp {
             ui.add_space(10.0);
 
             // 剪贴板内容预览
-            ui.label(i18n.t("ui.label_waiting_text"));
             let clipboard_text = self.state.get_clipboard_text();
+            let history_enabled = *self.state.history_enabled.lock().unwrap();
 
-            egui::ScrollArea::vertical()
-                .max_height(200.0)
-                .show(ui, |ui| {
-                    egui::Frame::none()
-                        .fill(ui.style().visuals.extreme_bg_color)
-                        .inner_margin(8.0)
-                        .rounding(4.0)
-                        .show(ui, |ui| {
-                            ui.set_min_width(ui.available_width());
-                            if clipboard_text.is_empty() {
-                                ui.label(egui::RichText::new(i18n.t("ui.label_empty")).italics().weak());
-                            } else {
-                                ui.label(&clipboard_text);
+            if history_enabled {
+                ui.label(i18n.t("ui.label_history_list"));
+                egui::ScrollArea::vertical()
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        let history = self.state.clipboard_history.lock().unwrap();
+                        if history.is_empty() {
+                            ui.label(egui::RichText::new(i18n.t("ui.label_empty")).italics().weak());
+                        } else {
+                            let history_len = history.len();
+                            for (index, item) in history.iter().rev().enumerate() {
+                                egui::Frame::none()
+                                    .fill(ui.style().visuals.extreme_bg_color)
+                                    .inner_margin(8.0)
+                                    .rounding(4.0)
+                                    .show(ui, |ui| {
+                                        ui.set_min_width(ui.available_width());
+                                        let time_label = i18n.tr(
+                                            "ui.label_copied_time",
+                                            &[("time", item.copied_at.as_str())],
+                                        );
+                                        ui.label(egui::RichText::new(time_label).small().weak());
+                                        ui.label(&item.text);
+                                    });
+                                if index + 1 < history_len {
+                                    ui.add_space(6.0);
+                                }
                             }
-                        });
-                });
+                        }
+                    });
+            } else {
+                ui.label(i18n.t("ui.label_waiting_text"));
+                egui::ScrollArea::vertical()
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        egui::Frame::none()
+                            .fill(ui.style().visuals.extreme_bg_color)
+                            .inner_margin(8.0)
+                            .rounding(4.0)
+                            .show(ui, |ui| {
+                                ui.set_min_width(ui.available_width());
+                                if clipboard_text.is_empty() {
+                                    ui.label(egui::RichText::new(i18n.t("ui.label_empty")).italics().weak());
+                                } else {
+                                    ui.label(&clipboard_text);
+                                }
+                            });
+                    });
+            }
 
             ui.add_space(10.0);
 
@@ -1595,6 +1644,10 @@ fn truncate_text(text: &str, max_len: usize) -> String {
             text[..truncate_pos].replace('\n', "\\n").replace('\r', "\\r")
         )
     }
+}
+
+fn format_history_timestamp() -> String {
+    Local::now().format("%H:%M:%S").to_string()
 }
 
 fn main() -> eframe::Result<()> {
