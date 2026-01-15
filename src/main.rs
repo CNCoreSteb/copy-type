@@ -7,6 +7,11 @@ mod hotkey_config;
 mod permissions;
 mod i18n;
 
+/// 单条剪贴板记录的最大大小（10MB）
+const MAX_SINGLE_ITEM_SIZE: usize = 10 * 1024 * 1024;
+/// 剪贴板历史记录的最大总内存（50MB）
+const MAX_TOTAL_MEMORY: usize = 50 * 1024 * 1024;
+
 use app_config::{AppConfig, CloseAction};
 use arboard::Clipboard;
 use eframe::egui;
@@ -44,6 +49,8 @@ struct SharedState {
     last_clipboard_text: Arc<Mutex<String>>,
     /// 剪贴板历史记录
     clipboard_history: Arc<Mutex<Vec<String>>>,
+    /// 剪贴板历史记录占用的总内存（字节）
+    history_memory_used: Arc<Mutex<usize>>,
     /// 是否保存剪贴板历史
     history_enabled: Arc<Mutex<bool>>,
     /// 剪贴板历史最多保存条数
@@ -82,6 +89,7 @@ impl SharedState {
             clipboard_text: Arc::new(Mutex::new(String::new())),
             last_clipboard_text: Arc::new(Mutex::new(String::new())),
             clipboard_history: Arc::new(Mutex::new(Vec::new())),
+            history_memory_used: Arc::new(Mutex::new(0)),
             history_enabled: Arc::new(Mutex::new(false)),
             history_max_items: Arc::new(Mutex::new(0)),
             is_typing: Arc::new(Mutex::new(false)),
@@ -165,16 +173,72 @@ impl SharedState {
         if max_items == 0 {
             return;
         }
+        
+        // 计算文本大小（字节）
+        let text_size = text.len();
+        
+        // 如果单条文本超过10MB，则不存储
+        if text_size > MAX_SINGLE_ITEM_SIZE {
+            warn!(
+                "{}",
+                self.tr(
+                    "log.item_too_large",
+                    &[
+                        ("size", &format!("{:.2}MB", text_size as f64 / 1024.0 / 1024.0)),
+                        ("max", &format!("{:.2}MB", MAX_SINGLE_ITEM_SIZE as f64 / 1024.0 / 1024.0))
+                    ]
+                )
+            );
+            return;
+        }
+        
         let mut history = self.clipboard_history.lock().unwrap();
+        let mut memory_used = self.history_memory_used.lock().unwrap();
+        
+        // 如果新增后总内存超过50MB，删除最旧的记录直到能够放下
+        while *memory_used + text_size > MAX_TOTAL_MEMORY && !history.is_empty() {
+            let removed = history.remove(0);
+            let removed_size = removed.len();
+            *memory_used = memory_used.saturating_sub(removed_size);
+            debug!(
+                "{}",
+                self.tr(
+                    "log.removed_old_item",
+                    &[
+                        ("size", &format!("{:.2}KB", removed_size as f64 / 1024.0)),
+                        ("remaining", &format!("{:.2}MB", *memory_used as f64 / 1024.0 / 1024.0))
+                    ]
+                )
+            );
+        }
+        
+        // 添加新记录
         history.push(text);
+        *memory_used += text_size;
+        
+        // 检查是否超出条数限制
         if history.len() > max_items as usize {
             let overflow = history.len() - max_items as usize;
-            history.drain(0..overflow);
+            for item in history.drain(0..overflow) {
+                *memory_used = memory_used.saturating_sub(item.len());
+            }
         }
+        
+        debug!(
+            "{}",
+            self.tr(
+                "log.history_stats",
+                &[
+                    ("count", &history.len().to_string()),
+                    ("memory", &format!("{:.2}MB", *memory_used as f64 / 1024.0 / 1024.0))
+                ]
+            )
+        );
     }
 
     fn clear_history(&self) {
         self.clipboard_history.lock().unwrap().clear();
+        *self.history_memory_used.lock().unwrap() = 0;
     }
 
     fn trim_history(&self) {
@@ -184,9 +248,12 @@ impl SharedState {
             return;
         }
         let mut history = self.clipboard_history.lock().unwrap();
+        let mut memory_used = self.history_memory_used.lock().unwrap();
         if history.len() > max_items as usize {
             let overflow = history.len() - max_items as usize;
-            history.drain(0..overflow);
+            for item in history.drain(0..overflow) {
+                *memory_used = memory_used.saturating_sub(item.len());
+            }
         }
     }
     

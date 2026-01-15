@@ -49,6 +49,9 @@ clipboard_preview = "内容预览: %{preview}"
 save_app_config_fail = "保存应用配置失败: %{err}"
 window_minimized_to_tray = "窗口已最小化到托盘"
 app_exit = "程序退出"
+item_too_large = "剪贴板内容过大 (%{size})，超过单条限制 (%{max})，不保存"
+removed_old_item = "移除旧记录释放 %{size}，剩余内存使用 %{remaining}"
+history_stats = "历史记录: %{count} 条，占用内存: %{memory}"
 
 [ui]
 title_permission_warning = "⚠️权限警告"

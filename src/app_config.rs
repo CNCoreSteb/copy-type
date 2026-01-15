@@ -39,6 +39,9 @@ pub struct AppConfig {
     pub auto_start: bool,
     /// 是否启动时最小化
     pub start_minimized: bool,
+    /// 是否已经询问过开机自启（用于首次启动询问）
+    #[serde(default)]
+    pub autostart_asked: bool,
     /// 是否显示调试控制台
     #[serde(default)]
     pub show_console: bool,
@@ -87,6 +90,7 @@ impl Default for AppConfig {
             close_action: CloseAction::MinimizeToTray,
             auto_start: false,
             start_minimized: false,
+            autostart_asked: false,
             show_console: false,
             typing_delay: default_typing_delay(),
             typing_variance: default_typing_variance(),

@@ -49,6 +49,9 @@ clipboard_preview = "Preview: %{preview}"
 save_app_config_fail = "Failed to save app config: %{err}"
 window_minimized_to_tray = "Window minimized to tray"
 app_exit = "Program exit"
+item_too_large = "Clipboard content too large (%{size}), exceeds single item limit (%{max}), not saving"
+removed_old_item = "Removed old item, freed %{size}, remaining memory usage %{remaining}"
+history_stats = "History: %{count} items, memory usage: %{memory}"
 
 [ui]
 title_permission_warning = "⚠️ Permission Warning"
