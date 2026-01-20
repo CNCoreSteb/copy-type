@@ -1,3 +1,8 @@
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::fs;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::path::Path;
+
 fn main() {
     // Windows 平台：设置程序资源
     #[cfg(windows)]
@@ -18,9 +23,6 @@ fn main() {
     // macOS 平台：生成 Info.plist
     #[cfg(target_os = "macos")]
     {
-        use std::fs;
-        use std::path::Path;
-        
         let info_plist = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -50,18 +52,17 @@ fn main() {
 </dict>
 </plist>"#;
         
-        let out_dir = std::env::var("OUT_DIR").unwrap();
+        let out_dir = std::env::var("OUT_DIR")
+            .expect("OUT_DIR is not set; Cargo should provide it during builds");
         let info_plist_path = Path::new(&out_dir).join("Info.plist");
-        fs::write(info_plist_path, info_plist).unwrap();
+        fs::write(info_plist_path, info_plist)
+            .expect("failed to write Info.plist to OUT_DIR");
         println!("cargo:rerun-if-changed=build.rs");
     }
 
     // Linux 平台：生成 .desktop 文件
     #[cfg(target_os = "linux")]
     {
-        use std::fs;
-        use std::path::Path;
-        
         let desktop_entry = r#"[Desktop Entry]
 Type=Application
 Name=Copy&Type
@@ -74,9 +75,11 @@ Categories=Utility;
 Keywords=clipboard;keyboard;typing;
 "#;
         
-        let out_dir = std::env::var("OUT_DIR").unwrap();
+        let out_dir = std::env::var("OUT_DIR")
+            .expect("OUT_DIR is not set; Cargo should provide it during builds");
         let desktop_path = Path::new(&out_dir).join("copy-type.desktop");
-        fs::write(desktop_path, desktop_entry).unwrap();
+        fs::write(desktop_path, desktop_entry)
+            .expect("failed to write copy-type.desktop to OUT_DIR");
         println!("cargo:rerun-if-changed=build.rs");
     }
 }
