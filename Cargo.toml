@@ -4,6 +4,13 @@ version = "1.1.0"
 edition = "2021"
 description = "一个跨平台的剪贴板监控和模拟键盘输入工具"
 authors = ["CN_CoreSteb"]
+license = "GPL-3.0-only"
+
+[package.metadata.deb]
+assets = [
+    ["assets/copy-type.desktop", "usr/share/applications/", "644"],
+    ["src/logo.png", "usr/share/icons/hicolor/256x256/apps/copy-type.png", "644"],
+]
 
 [dependencies]
 # 剪贴板操作
