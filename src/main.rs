@@ -250,11 +250,19 @@ impl SharedState {
                 ]
             )
         );
+
+        #[cfg(debug_assertions)]
+        Self::assert_history_memory_sync(&history, *memory_used);
     }
 
     fn clear_history(&self) {
-        self.clipboard_history.lock().unwrap().clear();
-        *self.history_memory_used.lock().unwrap() = 0;
+        let mut history = self.clipboard_history.lock().unwrap();
+        let mut memory_used = self.history_memory_used.lock().unwrap();
+        history.clear();
+        *memory_used = 0;
+
+        #[cfg(debug_assertions)]
+        Self::assert_history_memory_sync(&history, *memory_used);
     }
 
     fn trim_history(&self) {
@@ -271,6 +279,21 @@ impl SharedState {
                 *memory_used = memory_used.saturating_sub(item.text.len());
             }
         }
+
+        #[cfg(debug_assertions)]
+        Self::assert_history_memory_sync(&history, *memory_used);
+    }
+
+    #[cfg(debug_assertions)]
+    fn assert_history_memory_sync(history: &[HistoryItem], memory_used: usize) {
+        let computed: usize = history.iter().map(|item| item.text.len()).sum();
+        debug_assert_eq!(
+            memory_used,
+            computed,
+            "history_memory_used out of sync: tracked={}, actual={}",
+            memory_used,
+            computed
+        );
     }
     
     /// 执行模拟输入逻辑
@@ -440,7 +463,7 @@ struct TrayContext {
 }
 
 impl CopyTypeApp {
-    fn new(cc: &eframe::CreationContext<'_>, icon: tray_icon::Icon) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, icon: Option<tray_icon::Icon>) -> Self {
         // 设置中文字体
         setup_fonts(&cc.egui_ctx);
 
@@ -478,7 +501,12 @@ impl CopyTypeApp {
         }
 
         // 创建系统托盘，并保存上下文
-        let tray_context = create_tray_context(&i18n, icon);
+        let tray_context = if let Some(icon) = icon {
+            create_tray_context(&i18n, icon)
+        } else {
+            warn!("Tray icon unavailable; skipping tray menu.");
+            None
+        };
         
         let window_hwnd = get_window_hwnd(cc);
         let ctx_clone = cc.egui_ctx.clone();
@@ -628,7 +656,6 @@ impl CopyTypeApp {
                         }
                         Err(e) => {
                             let err = e.to_string();
-                            let display = self.hotkey_config.display();
                             error!(
                                 "{}",
                                 self.i18n
@@ -645,7 +672,8 @@ impl CopyTypeApp {
                             } else {
                                 self.i18n.tr("ui.error_hotkey_register_failed", &[("error", err.as_str())])
                             };
-                            self.startup_hotkey_error = Some(format!("{} - {}", display, friendly_error));
+                            self.startup_hotkey_error =
+                                Some(format!("{} - {}", self.hotkey_config.display(), friendly_error));
                             self.show_startup_hotkey_error = true;
                         }
                     }
@@ -677,6 +705,12 @@ impl CopyTypeApp {
         // 先尝试注册新的快捷键（不注销旧的）
         if let Some(manager) = &self.hotkey_manager {
             if let Some(new_hotkey) = self.temp_hotkey_config.to_global_hotkey() {
+                if let Some(current_hotkey) = self.current_hotkey {
+                    if current_hotkey == new_hotkey {
+                        self.hotkey_register_error = None;
+                        return;
+                    }
+                }
                 match manager.register(new_hotkey) {
                     Ok(()) => {
                         // 注册成功，现在注销旧的快捷键
@@ -1601,31 +1635,59 @@ fn show_main_window(ctx: &egui::Context, window_hwnd: Option<isize>) {
     ctx.request_repaint();
 }
 
+fn build_icon_from_rgba(
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+) -> Option<(tray_icon::Icon, egui::IconData)> {
+    match tray_icon::Icon::from_rgba(rgba.clone(), width, height) {
+        Ok(tray_icon) => Some((
+            tray_icon,
+            egui::IconData {
+                rgba,
+                width,
+                height,
+            },
+        )),
+        Err(e) => {
+            warn!("Failed to create tray icon: {}", e);
+            None
+        }
+    }
+}
+
+fn fallback_icon() -> Option<(tray_icon::Icon, egui::IconData)> {
+    const FALLBACK_ICON_SIZE: u32 = 32;
+    let rgba = vec![0u8; (FALLBACK_ICON_SIZE * FALLBACK_ICON_SIZE * 4) as usize];
+    build_icon_from_rgba(rgba, FALLBACK_ICON_SIZE, FALLBACK_ICON_SIZE)
+}
+
 /// 加载应用图标
-fn load_icon() -> (tray_icon::Icon, Option<egui::IconData>) {
+fn load_icon() -> (Option<tray_icon::Icon>, Option<egui::IconData>) {
     let icon_data = include_bytes!("logo.png");
-    
-    // 加载图片
-    let image = image::load_from_memory(icon_data)
-        .expect("Failed to load icon data")
-        .into_rgba8();
-    
-    let (width, height) = image.dimensions();
-    let rgba = image.into_raw();
 
-    // 创建托盘图标
-    let tray_icon = tray_icon::Icon::from_rgba(rgba.clone(), width, height)
-        .expect("Failed to create tray icon");
-
-    // 创建窗口图标
-    let window_icon = egui::IconData {
-        rgba,
-        width,
-        height,
+    let icons = match image::load_from_memory(icon_data) {
+        Ok(image) => {
+            let image = image.into_rgba8();
+            let (width, height) = image.dimensions();
+            let rgba = image.into_raw();
+            build_icon_from_rgba(rgba, width, height).or_else(fallback_icon)
+        }
+        Err(e) => {
+            warn!("Failed to load icon data: {}", e);
+            fallback_icon()
+        }
     };
 
-    (tray_icon, Some(window_icon))
+    if icons.is_none() {
+        warn!("Unable to create any icon data; continuing without icons.");
+    }
+
+    icons
+        .map(|(tray_icon, window_icon)| (Some(tray_icon), Some(window_icon)))
+        .unwrap_or((None, None))
 }
+
 
 /// 截断文本用于日志显示
 fn truncate_text(text: &str, max_len: usize) -> String {
@@ -1675,11 +1737,15 @@ fn main() -> eframe::Result<()> {
     // 加载图标
     let (tray_icon, window_icon) = load_icon();
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([400.0, 500.0])
+        .with_min_inner_size([350.0, 400.0]);
+    if let Some(window_icon) = window_icon {
+        viewport = viewport.with_icon(window_icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([400.0, 500.0])
-            .with_min_inner_size([350.0, 400.0])
-            .with_icon(window_icon.unwrap()),
+        viewport,
         ..Default::default()
     };
 

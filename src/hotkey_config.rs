@@ -266,7 +266,9 @@ impl Default for HotkeyConfig {
 
 impl HotkeyConfig {
     
-    /// 检查快捷键冲突
+    /// Checks whether two hotkey configurations are identical.
+    ///
+    /// Identical hotkeys would conflict if both were registered at the same time.
     pub fn conflicts_with(&self, other: &HotkeyConfig) -> bool {
         self.ctrl == other.ctrl
             && self.shift == other.shift
