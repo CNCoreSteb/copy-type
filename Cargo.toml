@@ -1,9 +1,9 @@
 [package]
 name = "copy-type"
-version = "0.1.0"
+version = "1.1.0"
 edition = "2021"
-description = "A clipboard monitor that types copied text via keyboard simulation"
-authors = ["Your Name"]
+description = "一个跨平台的剪贴板监控和模拟键盘输入工具"
+authors = ["CN_CoreSteb"]
 
 [dependencies]
 # 剪贴板操作
