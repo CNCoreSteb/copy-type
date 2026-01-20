@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Copy&Type
+GenericName=Clipboard Monitor
+Comment=Cross-platform clipboard monitor and keyboard input simulation tool
+Exec=copy-type
+Icon=copy-type
+Terminal=false
+Categories=Utility;
+Keywords=clipboard;keyboard;typing;

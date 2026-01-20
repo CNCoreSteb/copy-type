@@ -17,20 +17,20 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact_name: copy-type
-            asset_name: copy-type-linux-x86_64
+            binary_name: copy-type
+            asset_name: copy-type-linux-x86_64.deb
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact_name: copy-type.exe
+            binary_name: copy-type.exe
             asset_name: copy-type-windows-x86_64.exe
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact_name: copy-type
-            asset_name: copy-type-macos-x86_64
+            binary_name: copy-type
+            asset_name: copy-type-macos-x86_64.zip
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact_name: copy-type
-            asset_name: copy-type-macos-aarch64
+            binary_name: copy-type
+            asset_name: copy-type-macos-aarch64.zip
 
     steps:
     - uses: actions/checkout@v4
@@ -64,25 +64,55 @@ jobs:
           libgl1-mesa-dev \
           libegl1-mesa-dev \
           pkg-config
+
+    - name: Install cargo-deb
+      if: matrix.os == 'ubuntu-latest'
+      run: cargo install cargo-deb --locked
     
     - name: Build
       run: cargo build --release --target ${{ matrix.target }} --verbose
     
     - name: Strip binary (Linux and macOS)
       if: matrix.os != 'windows-latest'
-      run: strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+      run: strip target/${{ matrix.target }}/release/${{ matrix.binary_name }}
     
-    - name: Rename binary
+    - name: Build Linux package (.deb)
+      if: matrix.os == 'ubuntu-latest'
+      run: cargo deb --target ${{ matrix.target }} --no-build --verbose
+
+    - name: Assemble macOS .app
+      if: matrix.os == 'macos-latest'
       shell: bash
       run: |
+        set -euo pipefail
         mkdir -p artifacts
-        cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}
-        # 为 Linux 和 macOS 二进制文件添加可执行权限
-        if [ "${{ matrix.os }}" != "windows-latest" ]; then
-          chmod +x artifacts/${{ matrix.asset_name }}
+        APP_NAME="Copy&Type.app"
+        APP_DIR="bundle/$APP_NAME"
+        mkdir -p "$APP_DIR/Contents/MacOS"
+        mkdir -p "$APP_DIR/Contents/Resources"
+        cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} "$APP_DIR/Contents/MacOS/copy-type"
+        INFO_PLIST=$(ls target/${{ matrix.target }}/release/build/*/out/Info.plist | head -n 1)
+        cp "$INFO_PLIST" "$APP_DIR/Contents/Info.plist"
+        chmod +x "$APP_DIR/Contents/MacOS/copy-type"
+        ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "artifacts/${{ matrix.asset_name }}"
+
+    - name: Stage artifacts
+      if: matrix.os != 'macos-latest'
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p artifacts
+        if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} artifacts/${{ matrix.asset_name }}
+        else
+          DEB_PATH=$(ls target/${{ matrix.target }}/debian/*.deb target/debian/*.deb 2>/dev/null | head -n 1)
+          if [ -z "$DEB_PATH" ]; then
+            echo "Deb package not found."
+            exit 1
+          fi
+          cp "$DEB_PATH" "artifacts/${{ matrix.asset_name }}"
         fi
-    
-    # 将构建产物暂时上传，以便传给下一个 job
+
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with: 

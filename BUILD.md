@@ -105,3 +105,72 @@ cargo build --release --target aarch64-apple-darwin
 ### 产物位置
 - `target/release/copy-type`（原生架构）
 - `target/<target>/release/copy-type`（指定目标架构）
+
+## macOS .app packaging (Info.plist)
+The build script writes `Info.plist` into `OUT_DIR`, which is not automatically included in the `.app` bundle.
+Use one of the options below to package the macOS app correctly.
+
+### Option A: cargo-bundle (recommended)
+1. Install the tool:
+   ```bash
+   cargo install cargo-bundle
+   ```
+2. (Optional) Add bundle metadata to `Cargo.toml`:
+   ```toml
+   [package.metadata.bundle]
+   name = "Copy&Type"
+   identifier = "com.coresteb.copy-type"
+   ```
+3. Build the bundle:
+   ```bash
+   cargo bundle --release
+   ```
+
+### Option B: manual bundle assembly
+1. Build the binary:
+   ```bash
+   cargo build --release
+   ```
+2. Create the bundle structure and copy artifacts:
+   ```bash
+   APP_NAME="Copy&Type.app"
+   mkdir -p "$APP_NAME/Contents/MacOS"
+   mkdir -p "$APP_NAME/Contents/Resources"
+   cp "target/release/copy-type" "$APP_NAME/Contents/MacOS/copy-type"
+   cp "target/release/build/<crate-hash>/out/Info.plist" "$APP_NAME/Contents/Info.plist"
+   ```
+   Replace `<crate-hash>` with the actual build directory under `target/release/build/`.
+   If you build with a target triple, the path is `target/<target>/release/build/<crate-hash>/out/Info.plist`.
+
+## Linux .desktop installation
+The build script writes `copy-type.desktop` into `OUT_DIR`, which is not installed automatically.
+Use one of the options below to put it where desktop environments can find it.
+
+### Option A: user-local install
+1. Build the binary:
+   ```bash
+   cargo build --release
+   ```
+2. Locate the generated desktop file:
+   ```bash
+   ls target/release/build/*/out/copy-type.desktop
+   ```
+3. Install it for the current user:
+   ```bash
+   mkdir -p ~/.local/share/applications
+   cp target/release/build/*/out/copy-type.desktop ~/.local/share/applications/copy-type.desktop
+   ```
+4. (Optional) install an icon or update the `Icon=` field in the `.desktop` file to an absolute path.
+
+### Option B: system-wide install
+1. Build the binary:
+   ```bash
+   cargo build --release
+   ```
+2. Copy the `.desktop` file into `/usr/share/applications`:
+   ```bash
+   sudo cp target/release/build/*/out/copy-type.desktop /usr/share/applications/copy-type.desktop
+   ```
+
+### Option C: package it
+Consider using a packaging tool like `cargo-deb` (Debian/Ubuntu) or `cargo-rpm` (Fedora/RHEL) to install the `.desktop` file, binary, and icons together.

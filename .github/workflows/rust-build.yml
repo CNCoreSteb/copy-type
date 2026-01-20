@@ -55,7 +55,29 @@ jobs:
           libgl1-mesa-dev \
           libegl1-mesa-dev \
           pkg-config
+
+    - name: Install cargo-deb
+      if: matrix.os == 'ubuntu-latest'
+      run: cargo install cargo-deb --locked
     
     # 只进行编译，验证代码能否在各平台成功构建
     - name: Build
       run: cargo build --release --target ${{ matrix.target }} --verbose
+
+    - name: Build Linux package (.deb)
+      if: matrix.os == 'ubuntu-latest'
+      run: cargo deb --target ${{ matrix.target }} --no-build --verbose
+
+    - name: Assemble macOS .app
+      if: matrix.os == 'macos-latest'
+      shell: bash
+      run: |
+        set -euo pipefail
+        APP_NAME="Copy&Type.app"
+        APP_DIR="target/app/$APP_NAME"
+        mkdir -p "$APP_DIR/Contents/MacOS"
+        mkdir -p "$APP_DIR/Contents/Resources"
+        cp target/${{ matrix.target }}/release/copy-type "$APP_DIR/Contents/MacOS/copy-type"
+        INFO_PLIST=$(ls target/${{ matrix.target }}/release/build/*/out/Info.plist | head -n 1)
+        cp "$INFO_PLIST" "$APP_DIR/Contents/Info.plist"
+        chmod +x "$APP_DIR/Contents/MacOS/copy-type"
