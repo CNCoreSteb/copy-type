@@ -1,6 +1,9 @@
-# Copy-Type
+# Copy&Type
 
 [English](README_en.md) | 中文
+
+![GitHub Release](https://img.shields.io/github/v/release/CNCoreSteb/copy-type)
+![GitHub Repo stars](https://img.shields.io/github/stars/CNCoreSteb/copy-type)
 
 一个跨平台的剪贴板监控和模拟键盘输入工具，基于Rust。
 
@@ -11,7 +14,7 @@
 - **保留格式**：完整保留换行符、缩进等文本格式
 - **跨平台支持**：支持 Windows（主要）、macOS 和 Linux
 - **图形界面**：提供图形界面，支持启用/禁用、自定义快捷键、预览待输入文本
-- **剪贴板历史**：存储最多100条最近剪贴板（暂时不推荐使用）
+- **剪贴板历史**：存储最多100条或最近50MB的剪贴板记录
 
 ## 使用场景
 
@@ -38,6 +41,15 @@
 | `Ctrl+Shift+V` | 模拟键盘输入剪贴板内容（默认，可自定义）|
 
 ## 安装
+
+### 从Releases下载
+
+1. 访问 [Releases 页面](https://github.com/CNCoreSteb/copy-type/releases/)
+
+2. 下载适合操作系统的版本
+
+3. 放在任意喜欢的位置运行即可
+
 
 ### 从源码编译
 
@@ -99,6 +111,17 @@ sudo dnf install libX11-devel libxcb-devel
 ### macOS
 需要授予辅助功能权限
 
+## 生成式AI辅助与Vibe Coding声明
+
+本人为Rust新的不能再新的新手，本项目在最初仅为个人日常使用目的开发，且鉴于项目并不大，难免过度依赖AI的辅助和编码。但所有代码均经过本人审核和测试，确保符合预期功能，如有Rust大佬，欢迎提交PR。
+
+![](https://img.shields.io/badge/Claude%20Assisted-100%25-00a67d?logo=anthropic)
+![](https://img.shields.io/badge/Gemini%20Assisted-100%25-00a67d?logo=googlegemini)
+
 ## 许可证
 
 GPL-3.0 License
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=CNCoreSteb/copy-type&type=date&legend=top-left)](https://www.star-history.com/#CNCoreSteb/copy-type&type=date&legend=top-left)

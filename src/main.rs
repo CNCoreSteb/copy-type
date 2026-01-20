@@ -7,8 +7,14 @@ mod hotkey_config;
 mod permissions;
 mod i18n;
 
+/// 单条剪贴板记录的最大大小（10MB）
+const MAX_SINGLE_ITEM_SIZE: usize = 10 * 1024 * 1024;
+/// 剪贴板历史记录的最大总内存（50MB）
+const MAX_TOTAL_MEMORY: usize = 50 * 1024 * 1024;
+
 use app_config::{AppConfig, CloseAction};
 use arboard::Clipboard;
+use chrono::Local;
 use eframe::egui;
 use enigo::{Enigo, Keyboard, Settings};
 use global_hotkey::{hotkey::HotKey, GlobalHotKeyEvent, GlobalHotKeyManager};
@@ -35,6 +41,21 @@ const MENU_SHOW: &str = "show";
 const MENU_TOGGLE: &str = "toggle";
 const MENU_EXIT: &str = "exit";
 
+#[derive(Clone)]
+struct HistoryItem {
+    text: String,
+    copied_at: String,
+}
+
+impl HistoryItem {
+    fn new(text: String) -> Self {
+        Self {
+            text,
+            copied_at: format_history_timestamp(),
+        }
+    }
+}
+
 /// 共享应用状态
 #[derive(Clone)]
 struct SharedState {
@@ -43,7 +64,9 @@ struct SharedState {
     /// 上一次的剪贴板文本（用于检测变化）
     last_clipboard_text: Arc<Mutex<String>>,
     /// 剪贴板历史记录
-    clipboard_history: Arc<Mutex<Vec<String>>>,
+    clipboard_history: Arc<Mutex<Vec<HistoryItem>>>,
+    /// 剪贴板历史记录占用的总内存（字节）
+    history_memory_used: Arc<Mutex<usize>>,
     /// 是否保存剪贴板历史
     history_enabled: Arc<Mutex<bool>>,
     /// 剪贴板历史最多保存条数
@@ -82,6 +105,7 @@ impl SharedState {
             clipboard_text: Arc::new(Mutex::new(String::new())),
             last_clipboard_text: Arc::new(Mutex::new(String::new())),
             clipboard_history: Arc::new(Mutex::new(Vec::new())),
+            history_memory_used: Arc::new(Mutex::new(0)),
             history_enabled: Arc::new(Mutex::new(false)),
             history_max_items: Arc::new(Mutex::new(0)),
             is_typing: Arc::new(Mutex::new(false)),
@@ -165,16 +189,80 @@ impl SharedState {
         if max_items == 0 {
             return;
         }
+        
+        // 计算文本大小（字节）
+        let text_size = text.len();
+        
+        // 如果单条文本超过10MB，则不存储
+        if text_size > MAX_SINGLE_ITEM_SIZE {
+            warn!(
+                "{}",
+                self.tr(
+                    "log.item_too_large",
+                    &[
+                        ("size", &format!("{:.2}MB", text_size as f64 / 1024.0 / 1024.0)),
+                        ("max", &format!("{:.2}MB", MAX_SINGLE_ITEM_SIZE as f64 / 1024.0 / 1024.0))
+                    ]
+                )
+            );
+            return;
+        }
+        
         let mut history = self.clipboard_history.lock().unwrap();
-        history.push(text);
+        let mut memory_used = self.history_memory_used.lock().unwrap();
+        
+        // 如果新增后总内存超过50MB，删除最旧的记录直到能够放下
+        while *memory_used + text_size > MAX_TOTAL_MEMORY && !history.is_empty() {
+            let removed = history.remove(0);
+            let removed_size = removed.text.len();
+            *memory_used = memory_used.saturating_sub(removed_size);
+            debug!(
+                "{}",
+                self.tr(
+                    "log.removed_old_item",
+                    &[
+                        ("size", &format!("{:.2}KB", removed_size as f64 / 1024.0)),
+                        ("remaining", &format!("{:.2}MB", *memory_used as f64 / 1024.0 / 1024.0))
+                    ]
+                )
+            );
+        }
+        
+        // 添加新记录
+        history.push(HistoryItem::new(text));
+        *memory_used += text_size;
+        
+        // 检查是否超出条数限制
         if history.len() > max_items as usize {
             let overflow = history.len() - max_items as usize;
-            history.drain(0..overflow);
+            for item in history.drain(0..overflow) {
+                *memory_used = memory_used.saturating_sub(item.text.len());
+            }
         }
+        
+        debug!(
+            "{}",
+            self.tr(
+                "log.history_stats",
+                &[
+                    ("count", &history.len().to_string()),
+                    ("memory", &format!("{:.2}MB", *memory_used as f64 / 1024.0 / 1024.0))
+                ]
+            )
+        );
+
+        #[cfg(debug_assertions)]
+        Self::assert_history_memory_sync(&history, *memory_used);
     }
 
     fn clear_history(&self) {
-        self.clipboard_history.lock().unwrap().clear();
+        let mut history = self.clipboard_history.lock().unwrap();
+        let mut memory_used = self.history_memory_used.lock().unwrap();
+        history.clear();
+        *memory_used = 0;
+
+        #[cfg(debug_assertions)]
+        Self::assert_history_memory_sync(&history, *memory_used);
     }
 
     fn trim_history(&self) {
@@ -184,10 +272,28 @@ impl SharedState {
             return;
         }
         let mut history = self.clipboard_history.lock().unwrap();
+        let mut memory_used = self.history_memory_used.lock().unwrap();
         if history.len() > max_items as usize {
             let overflow = history.len() - max_items as usize;
-            history.drain(0..overflow);
+            for item in history.drain(0..overflow) {
+                *memory_used = memory_used.saturating_sub(item.text.len());
+            }
         }
+
+        #[cfg(debug_assertions)]
+        Self::assert_history_memory_sync(&history, *memory_used);
+    }
+
+    #[cfg(debug_assertions)]
+    fn assert_history_memory_sync(history: &[HistoryItem], memory_used: usize) {
+        let computed: usize = history.iter().map(|item| item.text.len()).sum();
+        debug_assert_eq!(
+            memory_used,
+            computed,
+            "history_memory_used out of sync: tracked={}, actual={}",
+            memory_used,
+            computed
+        );
     }
     
     /// 执行模拟输入逻辑
@@ -329,6 +435,12 @@ struct CopyTypeApp {
     show_app_settings: bool,
     /// 显示权限警告
     show_permission_warning: bool,
+    /// 快捷键注册错误信息
+    hotkey_register_error: Option<String>,
+    /// 显示启动时快捷键错误弹窗
+    show_startup_hotkey_error: bool,
+    /// 启动时快捷键错误信息
+    startup_hotkey_error: Option<String>,
     /// 权限状态
     permission_status: PermissionStatus,
     /// 系统托盘上下文，必须保持活跃
@@ -351,7 +463,7 @@ struct TrayContext {
 }
 
 impl CopyTypeApp {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, icon: Option<tray_icon::Icon>) -> Self {
         // 设置中文字体
         setup_fonts(&cc.egui_ctx);
 
@@ -389,7 +501,12 @@ impl CopyTypeApp {
         }
 
         // 创建系统托盘，并保存上下文
-        let tray_context = create_tray_context(&i18n);
+        let tray_context = if let Some(icon) = icon {
+            create_tray_context(&i18n, icon)
+        } else {
+            warn!("Tray icon unavailable; skipping tray menu.");
+            None
+        };
         
         let window_hwnd = get_window_hwnd(cc);
         let ctx_clone = cc.egui_ctx.clone();
@@ -490,6 +607,9 @@ impl CopyTypeApp {
             show_hotkey_settings: false,
             show_app_settings: false,
             show_permission_warning,
+            hotkey_register_error: None,
+            show_startup_hotkey_error: false,
+            startup_hotkey_error: None,
             permission_status,
             tray_context,
         };
@@ -546,6 +666,15 @@ impl CopyTypeApp {
                                     .i18n
                                     .tr("status.hotkey_register_fail", &[("err", err.as_str())]),
                             );
+                            // 保存用户友好的错误信息
+                            let friendly_error = if err.contains("already register") {
+                                self.i18n.t("ui.error_hotkey_already_registered")
+                            } else {
+                                self.i18n.tr("ui.error_hotkey_register_failed", &[("error", err.as_str())])
+                            };
+                            self.startup_hotkey_error =
+                                Some(format!("{} - {}", self.hotkey_config.display(), friendly_error));
+                            self.show_startup_hotkey_error = true;
                         }
                     }
                 }
@@ -564,40 +693,46 @@ impl CopyTypeApp {
                             .i18n
                             .tr("status.hotkey_manager_fail", &[("err", err.as_str())]),
                     );
+                // 保存用户友好的错误信息
+                self.startup_hotkey_error = Some(self.i18n.t("ui.error_hotkey_manager_init_failed"));
+                self.show_startup_hotkey_error = true;
             }
         }
     }
 
     /// 更新快捷键
     fn update_hotkey(&mut self) {
-        // 先注销旧的快捷键
-        if let (Some(manager), Some(old_hotkey)) = (&self.hotkey_manager, self.current_hotkey) {
-            if let Err(e) = manager.unregister(old_hotkey) {
-                let err = e.to_string();
-                warn!(
-                    "{}",
-                    self.i18n
-                        .tr("log.hotkey_unregister_fail", &[("err", err.as_str())])
-                );
-            } else {
-                info!("{}", self.i18n.t("log.hotkey_unregistered"));
-            }
-            self.current_hotkey_id = None;
-            self.current_hotkey = None;
-            *self.state.hotkey_id.lock().unwrap() = None;
-        }
-
-        // 更新配置
-        self.hotkey_config = self.temp_hotkey_config.clone();
-
-        // 注册新的快捷键
+        // 先尝试注册新的快捷键（不注销旧的）
         if let Some(manager) = &self.hotkey_manager {
-            if let Some(new_hotkey) = self.hotkey_config.to_global_hotkey() {
+            if let Some(new_hotkey) = self.temp_hotkey_config.to_global_hotkey() {
+                if let Some(current_hotkey) = self.current_hotkey {
+                    if current_hotkey == new_hotkey {
+                        self.hotkey_register_error = None;
+                        return;
+                    }
+                }
                 match manager.register(new_hotkey) {
                     Ok(()) => {
+                        // 注册成功，现在注销旧的快捷键
+                        if let Some(old_hotkey) = self.current_hotkey {
+                            if let Err(e) = manager.unregister(old_hotkey) {
+                                let err = e.to_string();
+                                warn!(
+                                    "{}",
+                                    self.i18n
+                                        .tr("log.hotkey_unregister_fail", &[("err", err.as_str())])
+                                );
+                            } else {
+                                info!("{}", self.i18n.t("log.hotkey_unregistered"));
+                            }
+                        }
+
+                        // 更新配置
+                        self.hotkey_config = self.temp_hotkey_config.clone();
                         self.current_hotkey_id = Some(new_hotkey.id());
                         self.current_hotkey = Some(new_hotkey);
                         *self.state.hotkey_id.lock().unwrap() = Some(new_hotkey.id());
+                        
                         let display = self.hotkey_config.display();
                         info!(
                             "{}",
@@ -620,19 +755,25 @@ impl CopyTypeApp {
                                     .tr("log.save_config_fail", &[("err", err.as_str())])
                             );
                         }
+
+                        // 清除错误信息
+                        self.hotkey_register_error = None;
                     }
                     Err(e) => {
+                        // 注册失败，保存错误信息
                         let err = e.to_string();
                         error!(
                             "{}",
                             self.i18n
                                 .tr("log.hotkey_register_fail", &[("err", err.as_str())])
                         );
-                        self.state.set_status(
-                            &self
-                                .i18n
-                                .tr("status.hotkey_register_fail", &[("err", err.as_str())]),
-                        );
+                        // 保存用户友好的错误信息
+                        let friendly_error = if err.contains("already register") {
+                            self.i18n.t("ui.error_hotkey_already_registered")
+                        } else {
+                            err
+                        };
+                        self.hotkey_register_error = Some(friendly_error);
                     }
                 }
             }
@@ -746,6 +887,42 @@ impl eframe::App for CopyTypeApp {
                 });
         }
 
+        // 启动时快捷键错误警告窗口
+        if self.show_startup_hotkey_error {
+            egui::Window::new(i18n.t("ui.title_hotkey_error"))
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(i18n.t("ui.label_hotkey_conflict_startup"));
+                    ui.add_space(10.0);
+
+                    if let Some(error) = &self.startup_hotkey_error {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 100, 100),
+                            error
+                        );
+                    }
+
+                    ui.add_space(10.0);
+                    ui.label(i18n.t("ui.label_hotkey_conflict_suggestion"));
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button(i18n.t("ui.button_open_settings")).clicked() {
+                            self.show_startup_hotkey_error = false;
+                            self.show_hotkey_settings = true;
+                            self.temp_hotkey_config = self.hotkey_config.clone();
+                        }
+                        if ui.button(i18n.t("ui.button_acknowledge")).clicked() {
+                            self.show_startup_hotkey_error = false;
+                        }
+                    });
+                });
+        }
+
         // 顶部菜单栏
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
@@ -851,25 +1028,58 @@ impl eframe::App for CopyTypeApp {
             ui.add_space(10.0);
 
             // 剪贴板内容预览
-            ui.label(i18n.t("ui.label_waiting_text"));
             let clipboard_text = self.state.get_clipboard_text();
+            let history_enabled = *self.state.history_enabled.lock().unwrap();
 
-            egui::ScrollArea::vertical()
-                .max_height(200.0)
-                .show(ui, |ui| {
-                    egui::Frame::none()
-                        .fill(ui.style().visuals.extreme_bg_color)
-                        .inner_margin(8.0)
-                        .rounding(4.0)
-                        .show(ui, |ui| {
-                            ui.set_min_width(ui.available_width());
-                            if clipboard_text.is_empty() {
-                                ui.label(egui::RichText::new(i18n.t("ui.label_empty")).italics().weak());
-                            } else {
-                                ui.label(&clipboard_text);
+            if history_enabled {
+                ui.label(i18n.t("ui.label_history_list"));
+                egui::ScrollArea::vertical()
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        let history = self.state.clipboard_history.lock().unwrap();
+                        if history.is_empty() {
+                            ui.label(egui::RichText::new(i18n.t("ui.label_empty")).italics().weak());
+                        } else {
+                            let history_len = history.len();
+                            for (index, item) in history.iter().rev().enumerate() {
+                                egui::Frame::none()
+                                    .fill(ui.style().visuals.extreme_bg_color)
+                                    .inner_margin(8.0)
+                                    .rounding(4.0)
+                                    .show(ui, |ui| {
+                                        ui.set_min_width(ui.available_width());
+                                        let time_label = i18n.tr(
+                                            "ui.label_copied_time",
+                                            &[("time", item.copied_at.as_str())],
+                                        );
+                                        ui.label(egui::RichText::new(time_label).small().weak());
+                                        ui.label(&item.text);
+                                    });
+                                if index + 1 < history_len {
+                                    ui.add_space(6.0);
+                                }
                             }
-                        });
-                });
+                        }
+                    });
+            } else {
+                ui.label(i18n.t("ui.label_waiting_text"));
+                egui::ScrollArea::vertical()
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        egui::Frame::none()
+                            .fill(ui.style().visuals.extreme_bg_color)
+                            .inner_margin(8.0)
+                            .rounding(4.0)
+                            .show(ui, |ui| {
+                                ui.set_min_width(ui.available_width());
+                                if clipboard_text.is_empty() {
+                                    ui.label(egui::RichText::new(i18n.t("ui.label_empty")).italics().weak());
+                                } else {
+                                    ui.label(&clipboard_text);
+                                }
+                            });
+                    });
+            }
 
             ui.add_space(10.0);
 
@@ -950,15 +1160,52 @@ impl eframe::App for CopyTypeApp {
                     });
 
                     ui.add_space(10.0);
+
+                    // 验证快捷键
+                    let is_valid = self.temp_hotkey_config.is_valid();
+                    let is_same = self.temp_hotkey_config.conflicts_with(&self.hotkey_config);
+                    let can_save = is_valid && !is_same;
+
+                    // 显示警告
+                    if !is_valid {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 100, 100),
+                            format!("⚠ {}", i18n.t("ui.error_no_modifier_key"))
+                        );
+                        ui.add_space(10.0);
+                    } else if is_same {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 165, 0),
+                            format!("⚠ {}", i18n.t("ui.warning_same_hotkey"))
+                        );
+                        ui.add_space(10.0);
+                    }
+
+                    // 显示注册错误（如果有）
+                    if let Some(error) = &self.hotkey_register_error {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 100, 100),
+                            format!("⚠ {}: {}", i18n.t("ui.error_hotkey_conflict"), error)
+                        );
+                        ui.add_space(10.0);
+                    }
+
                     ui.separator();
                     ui.add_space(10.0);
 
                     ui.horizontal(|ui| {
-                        if ui.button(i18n.t("ui.button_save")).clicked() {
-                            self.update_hotkey();
-                            self.show_hotkey_settings = false;
-                        }
+                        // 如果无效或相同，禁用保存按钮
+                        ui.add_enabled_ui(can_save, |ui| {
+                            if ui.button(i18n.t("ui.button_save")).clicked() {
+                                self.update_hotkey();
+                                // 只有在没有错误时才关闭窗口
+                                if self.hotkey_register_error.is_none() {
+                                    self.show_hotkey_settings = false;
+                                }
+                            }
+                        });
                         if ui.button(i18n.t("ui.button_cancel")).clicked() {
+                            self.hotkey_register_error = None;
                             self.show_hotkey_settings = false;
                         }
                     });
@@ -1280,7 +1527,7 @@ fn hide_console_window() {
 }
 
 /// 创建系统托盘图标
-fn create_tray_context(i18n: &I18n) -> Option<TrayContext> {
+fn create_tray_context(i18n: &I18n, icon: tray_icon::Icon) -> Option<TrayContext> {
     // 创建托盘菜单
     let menu = Menu::new();
 
@@ -1321,8 +1568,6 @@ fn create_tray_context(i18n: &I18n) -> Option<TrayContext> {
         i18n.tr("tray.log.menu_created", &[("count", "3")])
     );
 
-    // 创建托盘图标（使用默认图标）
-    let icon = create_default_icon();
     let tooltip = i18n.t("tray.tooltip");
 
     match TrayIconBuilder::new()
@@ -1390,29 +1635,59 @@ fn show_main_window(ctx: &egui::Context, window_hwnd: Option<isize>) {
     ctx.request_repaint();
 }
 
-/// 创建默认托盘图标
-fn create_default_icon() -> tray_icon::Icon {
-    // 创建一个简单的 16x16 图标
-    let size = 16u32;
-    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
-
-    for y in 0..size {
-        for x in 0..size {
-            // 创建一个简单的渐变图标
-            let r = ((x as f32 / size as f32) * 100.0 + 100.0) as u8;
-            let g = ((y as f32 / size as f32) * 100.0 + 100.0) as u8;
-            let b = 200u8;
-            let a = 255u8;
-
-            rgba.push(r);
-            rgba.push(g);
-            rgba.push(b);
-            rgba.push(a);
+fn build_icon_from_rgba(
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+) -> Option<(tray_icon::Icon, egui::IconData)> {
+    match tray_icon::Icon::from_rgba(rgba.clone(), width, height) {
+        Ok(tray_icon) => Some((
+            tray_icon,
+            egui::IconData {
+                rgba,
+                width,
+                height,
+            },
+        )),
+        Err(e) => {
+            warn!("Failed to create tray icon: {}", e);
+            None
         }
     }
-
-    tray_icon::Icon::from_rgba(rgba, size, size).expect("Failed to create icon")
 }
+
+fn fallback_icon() -> Option<(tray_icon::Icon, egui::IconData)> {
+    const FALLBACK_ICON_SIZE: u32 = 32;
+    let rgba = vec![0u8; (FALLBACK_ICON_SIZE * FALLBACK_ICON_SIZE * 4) as usize];
+    build_icon_from_rgba(rgba, FALLBACK_ICON_SIZE, FALLBACK_ICON_SIZE)
+}
+
+/// 加载应用图标
+fn load_icon() -> (Option<tray_icon::Icon>, Option<egui::IconData>) {
+    let icon_data = include_bytes!("logo.png");
+
+    let icons = match image::load_from_memory(icon_data) {
+        Ok(image) => {
+            let image = image.into_rgba8();
+            let (width, height) = image.dimensions();
+            let rgba = image.into_raw();
+            build_icon_from_rgba(rgba, width, height).or_else(fallback_icon)
+        }
+        Err(e) => {
+            warn!("Failed to load icon data: {}", e);
+            fallback_icon()
+        }
+    };
+
+    if icons.is_none() {
+        warn!("Unable to create any icon data; continuing without icons.");
+    }
+
+    icons
+        .map(|(tray_icon, window_icon)| (Some(tray_icon), Some(window_icon)))
+        .unwrap_or((None, None))
+}
+
 
 /// 截断文本用于日志显示
 fn truncate_text(text: &str, max_len: usize) -> String {
@@ -1431,6 +1706,10 @@ fn truncate_text(text: &str, max_len: usize) -> String {
             text[..truncate_pos].replace('\n', "\\n").replace('\r', "\\r")
         )
     }
+}
+
+fn format_history_timestamp() -> String {
+    Local::now().format("%H:%M:%S").to_string()
 }
 
 fn main() -> eframe::Result<()> {
@@ -1455,16 +1734,24 @@ fn main() -> eframe::Result<()> {
         );
     }
 
+    // 加载图标
+    let (tray_icon, window_icon) = load_icon();
+
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([400.0, 500.0])
+        .with_min_inner_size([350.0, 400.0]);
+    if let Some(window_icon) = window_icon {
+        viewport = viewport.with_icon(window_icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([400.0, 500.0])
-            .with_min_inner_size([350.0, 400.0]),
+        viewport,
         ..Default::default()
     };
 
     eframe::run_native(
-        "Copy-Type",
+        "Copy&Type",
         options,
-        Box::new(|cc| Ok(Box::new(CopyTypeApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(CopyTypeApp::new(cc, tray_icon)))),
     )
 }

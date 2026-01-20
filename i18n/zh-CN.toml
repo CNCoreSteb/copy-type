@@ -49,12 +49,19 @@ clipboard_preview = "内容预览: %{preview}"
 save_app_config_fail = "保存应用配置失败: %{err}"
 window_minimized_to_tray = "窗口已最小化到托盘"
 app_exit = "程序退出"
+item_too_large = "剪贴板内容过大 (%{size})，超过单条限制 (%{max})，不保存"
+removed_old_item = "移除旧记录释放 %{size}，剩余内存使用 %{remaining}"
+history_stats = "历史记录: %{count} 条，占用内存: %{memory}"
 
 [ui]
-title_permission_warning = "⚠️ 权限警告"
+title_permission_warning = "⚠️权限警告"
+title_hotkey_error = "⚠️快捷键错误"
 label_permission_issues = "检测到以下权限问题："
+label_hotkey_conflict_startup = "程序启动时无法注册快捷键，可能已被其他程序占用："
+label_hotkey_conflict_suggestion = "请在设置中修改为其他快捷键。在重新设置快捷键之前，程序将无法响应快捷键操作。"
 label_fix_suggestions = "查看修复建议"
 button_acknowledge = "我知道了，继续使用"
+button_open_settings = "打开设置"
 button_exit = "退出程序"
 menu_file = "文件"
 menu_minimize_to_tray = "最小化到托盘"
@@ -65,14 +72,16 @@ menu_app_settings = "应用设置"
 menu_help = "帮助"
 menu_check_permissions = "检查权限"
 label_status = "状态: %{status}"
-label_permission_problem = "⚠️ 权限问题"
-title_main = "Copy-Type"
+label_permission_problem = "⚠️权限问题"
+title_main = "Copy&Type"
 label_app_status = "程序状态:"
 label_enabled = "✅ 已启用"
 label_disabled = "❌ 已禁用"
 label_current_hotkey = "当前快捷键:"
 button_modify = "修改"
 label_waiting_text = "等待输入的文本:"
+label_history_list = "剪贴板历史:"
+label_copied_time = "拷贝时间: %{time}"
 label_empty = "(空)"
 label_char_count = "字符数: %{count}"
 label_line_count = "行数: %{count}"
@@ -85,12 +94,18 @@ button_save = "保存"
 button_cancel = "取消"
 window_hotkey_settings = "快捷键设置"
 window_app_settings = "应用设置"
+error_no_modifier_key = "错误：快捷键必须包含至少一个修饰键（Ctrl、Shift、Alt 或 Win）"
+warning_same_hotkey = "提示：此快捷键与当前快捷键相同，无需重复保存"
+error_hotkey_conflict = "错误：此快捷键已被其他程序占用，请选择其他快捷键"
+error_hotkey_already_registered = "快捷键已被其他程序占用"
+error_hotkey_register_failed = "注册失败：%{error}"
+error_hotkey_manager_init_failed = "快捷键系统初始化失败，请检查系统权限"
 
 [tray]
 menu_show = "显示窗口"
 menu_toggle = "启用/禁用"
 menu_exit = "退出"
-tooltip = "Copy-Type - 剪贴板模拟输入"
+tooltip = "Copy&Type - 剪贴板模拟输入"
 
 [tray.log]
 add_show_fail = "添加显示菜单项失败: %{err}"
@@ -162,7 +177,7 @@ macos = """修复建议：
 2. 进入「安全性与隐私」→「隐私」
 3. 在左侧选择「辅助功能」
 4. 点击左下角的锁图标解锁
-5. 勾选 Copy-Type 应用程序
+5. 勾选 Copy&Type 应用程序
 6. 重新启动本程序
 """
 linux = """修复建议：

@@ -49,12 +49,19 @@ clipboard_preview = "Preview: %{preview}"
 save_app_config_fail = "Failed to save app config: %{err}"
 window_minimized_to_tray = "Window minimized to tray"
 app_exit = "Program exit"
+item_too_large = "Clipboard content too large (%{size}), exceeds single item limit (%{max}), not saving"
+removed_old_item = "Removed old item, freed %{size}, remaining memory usage %{remaining}"
+history_stats = "History: %{count} items, memory usage: %{memory}"
 
 [ui]
 title_permission_warning = "⚠️ Permission Warning"
+title_hotkey_error = "⚠️ Hotkey Error"
 label_permission_issues = "The following permission issues were detected:"
+label_hotkey_conflict_startup = "Failed to register hotkey at startup, it may already be in use by another program:"
+label_hotkey_conflict_suggestion = "Please change to a different hotkey in settings. The program will not respond to hotkey actions until a new hotkey is configured."
 label_fix_suggestions = "View Fix Suggestions"
 button_acknowledge = "I understand, continue"
+button_open_settings = "Open Settings"
 button_exit = "Exit Program"
 menu_file = "File"
 menu_minimize_to_tray = "Minimize to Tray"
@@ -66,13 +73,15 @@ menu_help = "Help"
 menu_check_permissions = "Check Permissions"
 label_status = "Status: %{status}"
 label_permission_problem = "⚠️ Permission Issue"
-title_main = "Copy-Type"
+title_main = "Copy&Type"
 label_app_status = "Status:"
 label_enabled = "✅ Enabled"
 label_disabled = "❌ Disabled"
 label_current_hotkey = "Current Hotkey:"
 button_modify = "Modify"
 label_waiting_text = "Text to type:"
+label_history_list = "Clipboard history:"
+label_copied_time = "Copied at: %{time}"
 label_empty = "(Empty)"
 label_char_count = "Chars: %{count}"
 label_line_count = "Lines: %{count}"
@@ -85,12 +94,18 @@ button_save = "Save"
 button_cancel = "Cancel"
 window_hotkey_settings = "Hotkey Settings"
 window_app_settings = "App Settings"
+error_no_modifier_key = "Error: Hotkey must include at least one modifier key (Ctrl, Shift, Alt, or Win)"
+warning_same_hotkey = "Notice: This hotkey is the same as the current one, no need to save again"
+error_hotkey_conflict = "Error: This hotkey is already in use by another program, please choose a different one"
+error_hotkey_already_registered = "This hotkey is already in use by another program"
+error_hotkey_register_failed = "Registration failed: %{error}"
+error_hotkey_manager_init_failed = "Hotkey system initialization failed, please check system permissions"
 
 [tray]
 menu_show = "Show Window"
 menu_toggle = "Enable/Disable"
 menu_exit = "Exit"
-tooltip = "Copy-Type - Clipboard Simulation"
+tooltip = "Copy&Type - Clipboard Simulation"
 
 [tray.log]
 add_show_fail = "Failed to add Show menu item: %{err}"
@@ -162,7 +177,7 @@ macos = """Fix suggestions:
 2. Go to Security & Privacy → Privacy
 3. Select Accessibility on the left
 4. Unlock with the lock icon
-5. Enable the Copy-Type app
+5. Enable the Copy&Type app
 6. Restart this program
 """
 linux = """Fix suggestions:
