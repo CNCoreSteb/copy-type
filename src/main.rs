@@ -6,6 +6,8 @@ mod app_config;
 mod hotkey_config;
 mod permissions;
 mod i18n;
+#[cfg(test)]
+mod tests;
 
 /// 单条剪贴板记录的最大大小（10MB）
 const MAX_SINGLE_ITEM_SIZE: usize = 10 * 1024 * 1024;
@@ -84,10 +86,8 @@ struct SharedState {
     window_visible: Arc<AtomicBool>,
     /// 模拟输入时的延迟 (毫秒)
     typing_delay: Arc<Mutex<u64>>,
-    /// 模拟输入时的随机偏差 (毫秒)
+    /// 模拟输入时的随机偏差 (毫秒)，为 0 时不抖动
     typing_variance: Arc<Mutex<u64>>,
-    /// 是否启用随机偏差
-    typing_variance_enabled: Arc<Mutex<bool>>,
     /// 输入是否暂停
     typing_paused: Arc<Mutex<bool>>,
     /// 最近一次快捷键触发时间
@@ -115,7 +115,6 @@ impl SharedState {
             window_visible: Arc::new(AtomicBool::new(true)),
             typing_delay: Arc::new(Mutex::new(0)),
             typing_variance: Arc::new(Mutex::new(0)),
-            typing_variance_enabled: Arc::new(Mutex::new(false)),
             typing_paused: Arc::new(Mutex::new(false)),
             last_hotkey_trigger: Arc::new(Mutex::new(None)),
             hotkey_id: Arc::new(Mutex::new(None)),
@@ -177,7 +176,7 @@ impl SharedState {
         self.i18n.t(key)
     }
 
-    fn tr<'a>(&self, key: &str, args: &[(&str, &'a str)]) -> String {
+    fn tr(&self, key: &str, args: &[(&str, &str)]) -> String {
         self.i18n.tr(key, args)
     }
 
@@ -318,7 +317,6 @@ impl SharedState {
         let state = self.clone();
         let delay = *self.typing_delay.lock().unwrap();
         let variance = *self.typing_variance.lock().unwrap();
-        let variance_enabled = *self.typing_variance_enabled.lock().unwrap();
 
         thread::spawn(move || {
             // 延迟输入，防止还未松开快捷键
@@ -337,7 +335,6 @@ impl SharedState {
             let len_str = text.len().to_string();
             let delay_str = delay.to_string();
             let variance_str = variance.to_string();
-            let variance_enabled_str = variance_enabled.to_string();
 
             info!(
                 "{}",
@@ -346,8 +343,7 @@ impl SharedState {
                     &[
                         ("len", len_str.as_str()),
                         ("delay", delay_str.as_str()),
-                        ("variance", variance_str.as_str()),
-                        ("variance_enabled", variance_enabled_str.as_str())
+                        ("variance", variance_str.as_str())
                     ]
                 )
             );
@@ -377,7 +373,7 @@ impl SharedState {
 
                  // 计算实际延迟
                 let mut actual_delay = delay;
-                if variance_enabled && variance > 0 {
+                if variance > 0 {
                     // 在 [delay, delay + variance] 之间随机
                     let v = rng.gen_range(0..=variance);
                     actual_delay += v;
@@ -446,6 +442,15 @@ struct CopyTypeApp {
     /// 系统托盘上下文，必须保持活跃
     #[allow(dead_code)]
     tray_context: Option<TrayContext>,
+    /// 托盘是否实际可用（Linux 上由 GTK 线程异步置位）。
+    /// 用于关闭/最小化时避免“窗口隐藏后没有托盘可恢复”。
+    tray_available: Arc<AtomicBool>,
+    /// 启动时最小化的待处理标记（Linux：等待托盘就绪后再隐藏）
+    #[cfg(target_os = "linux")]
+    pending_minimize: bool,
+    /// 启动最小化的等待帧数预算（Linux）
+    #[cfg(target_os = "linux")]
+    startup_minimize_frames: u32,
 }
 
 /// 保持托盘及其菜单项存活的结构体
@@ -486,7 +491,6 @@ impl CopyTypeApp {
         // 初始化 state 中的配置值
         *state.typing_delay.lock().unwrap() = app_config.typing_delay;
         *state.typing_variance.lock().unwrap() = app_config.typing_variance;
-        *state.typing_variance_enabled.lock().unwrap() = app_config.typing_variance_enabled;
         *state.history_enabled.lock().unwrap() = app_config.history_enabled;
         *state.history_max_items.lock().unwrap() = app_config.history_max_items;
 
@@ -500,11 +504,28 @@ impl CopyTypeApp {
             }
         }
 
-        // 创建系统托盘，并保存上下文
+        // 托盘是否可用（关闭/最小化逻辑依赖它，避免窗口隐藏后无法恢复）
+        let tray_available = Arc::new(AtomicBool::new(false));
+
+        // 创建系统托盘
+        // Windows/macOS：在主线程创建（主线程已有 win32 / NSApp 事件循环）。
+        #[cfg(not(target_os = "linux"))]
         let tray_context = if let Some(icon) = icon {
-            create_tray_context(&i18n, icon)
+            let tray_ctx = create_tray_context(&i18n, icon);
+            tray_available.store(tray_ctx.is_some(), Ordering::SeqCst);
+            tray_ctx
         } else {
             warn!("Tray icon unavailable; skipping tray menu.");
+            None
+        };
+
+        // Linux：tray-icon/muda 基于 GTK，必须在“已初始化 GTK 且有 GTK 事件循环”的
+        // 线程上创建并运行；而 eframe 用的是 winit（无 GTK 循环），因此这里专门起一个
+        // GTK 线程承载托盘（见 spawn_linux_tray）。
+        #[cfg(target_os = "linux")]
+        let tray_context: Option<TrayContext> = {
+            let _ = icon; // 托盘图标在 GTK 线程内自行构建
+            spawn_linux_tray(i18n.clone(), tray_available.clone());
             None
         };
         
@@ -612,6 +633,11 @@ impl CopyTypeApp {
             startup_hotkey_error: None,
             permission_status,
             tray_context,
+            tray_available,
+            #[cfg(target_os = "linux")]
+            pending_minimize: false,
+            #[cfg(target_os = "linux")]
+            startup_minimize_frames: 0,
         };
 
         // 初始化快捷键
@@ -620,12 +646,22 @@ impl CopyTypeApp {
         // 启动剪贴板监控
         app.start_clipboard_monitor();
 
-        // 如果设置为启动时最小化，则隐藏窗口
+        // 启动时最小化：仅当托盘可用时才隐藏窗口，否则会“隐藏后无法恢复”。
         if app_config.start_minimized {
-            app.state.window_visible.store(false, Ordering::SeqCst);
-            if let Some(ctx) = cc.egui_ctx.clone().into() {
-                let ctx: egui::Context = ctx;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            #[cfg(not(target_os = "linux"))]
+            {
+                if app.tray_available.load(Ordering::SeqCst) {
+                    app.state.window_visible.store(false, Ordering::SeqCst);
+                    cc.egui_ctx
+                        .send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                } else {
+                    warn!("Tray unavailable; ignoring start-minimized to keep the window reachable.");
+                }
+            }
+            // Linux：托盘由 GTK 线程异步创建，推迟到 update() 确认托盘就绪后再隐藏。
+            #[cfg(target_os = "linux")]
+            {
+                app.pending_minimize = true;
             }
         }
 
@@ -810,12 +846,8 @@ impl CopyTypeApp {
                                 state.tr("log.clipboard_changed", &[("len", len_str.as_str())])
                             );
                             
-                            // 安全地生成预览，如果 truncate_text panic 就用简单方式
-                            let preview = std::panic::catch_unwind(|| truncate_text(&text, 50))
-                                .unwrap_or_else(|_| {
-                                    error!("truncate_text 发生错误，使用简单截断");
-                                    text.chars().take(50).collect::<String>() + "..."
-                                });
+                            // truncate_text 已按字符边界安全截断
+                            let preview = truncate_text(&text, 50);
                             debug!("{}", state.tr("log.clipboard_preview", &[("preview", preview.as_str())]));
 
                             *state.clipboard_text.lock().unwrap() = text.clone();
@@ -850,6 +882,20 @@ impl eframe::App for CopyTypeApp {
 
         // 请求持续重绘以处理事件
         ctx.request_repaint_after(Duration::from_millis(50));
+
+        // Linux：等待托盘就绪后再执行“启动最小化”，避免托盘还没建好就把窗口藏了导致无法恢复。
+        #[cfg(target_os = "linux")]
+        if self.pending_minimize {
+            self.startup_minimize_frames += 1;
+            if self.tray_available.load(Ordering::SeqCst) {
+                self.state.window_visible.store(false, Ordering::SeqCst);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                self.pending_minimize = false;
+            } else if self.startup_minimize_frames > 40 {
+                warn!("Tray did not become available; keeping the window visible.");
+                self.pending_minimize = false;
+            }
+        }
 
         // 权限警告窗口
         if self.show_permission_warning {
@@ -1372,7 +1418,6 @@ impl eframe::App for CopyTypeApp {
                             // 更新 state 中的配置
                             *self.state.typing_delay.lock().unwrap() = self.app_config.typing_delay;
                             *self.state.typing_variance.lock().unwrap() = self.app_config.typing_variance;
-                            *self.state.typing_variance_enabled.lock().unwrap() = self.app_config.typing_variance_enabled;
                             *self.state.history_enabled.lock().unwrap() = self.app_config.history_enabled;
                             *self.state.history_max_items.lock().unwrap() = self.app_config.history_max_items;
                             if self.app_config.history_enabled {
@@ -1403,21 +1448,22 @@ impl eframe::App for CopyTypeApp {
         }
 
         // 检查关闭请求
-        if ctx.input(|i| i.viewport().close_requested()) {
-            if !self.state.request_exit.load(Ordering::SeqCst) {
-                match self.app_config.close_action {
-                    CloseAction::MinimizeToTray => {
-                        // 取消关闭，改为隐藏
-                        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                        self.state.window_visible.store(false, Ordering::SeqCst);
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                        info!("{}", i18n.t("log.window_minimized_to_tray"));
-                    }
-                    CloseAction::ExitApp => {
-                        // 允许关闭
-                        info!("{}", i18n.t("log.app_exit"));
-                    }
-                }
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.state.request_exit.load(Ordering::SeqCst)
+        {
+            // 仅当托盘可用时才“最小化到托盘”，否则直接退出，
+            // 避免在托盘不可用（如 Linux 无 GTK 托盘）时窗口隐藏后无法恢复。
+            let minimize = matches!(self.app_config.close_action, CloseAction::MinimizeToTray)
+                && self.tray_available.load(Ordering::SeqCst);
+            if minimize {
+                // 取消关闭，改为隐藏
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.state.window_visible.store(false, Ordering::SeqCst);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                info!("{}", i18n.t("log.window_minimized_to_tray"));
+            } else {
+                // 允许关闭（用户选择退出，或托盘不可用时的安全回退）
+                info!("{}", i18n.t("log.app_exit"));
             }
         }
     }
@@ -1467,19 +1513,36 @@ fn setup_fonts(ctx: &egui::Context) {
         }
     }
 
-    // 在 Linux 上使用 Noto Sans CJK
+    // 在 Linux 上尝试一系列常见的 CJK 字体路径（不同发行版位置不同）。
+    // egui 内置字体不含 CJK 字形，默认语言又是中文，找不到字体会显示成“豆腐块”。
     #[cfg(target_os = "linux")]
     {
         let font_paths = [
-            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            // Debian / Ubuntu
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+            // Arch / 通用
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJKsc-Regular.otf",
+            // Fedora
+            "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJKsc-Regular.otf",
+            // Adobe Source Han Sans
+            "/usr/share/fonts/adobe-source-han-sans/SourceHanSansSC-Regular.otf",
+            "/usr/share/fonts/source-han-sans/SourceHanSansSC-Regular.otf",
+            // 文泉驿
+            "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            // Android / Droid fallback
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
         ];
 
+        let mut loaded = false;
         for path in &font_paths {
             if let Ok(font_data) = std::fs::read(path) {
                 fonts.font_data.insert(
-                    "noto".to_owned(),
+                    "cjk".to_owned(),
                     std::sync::Arc::new(egui::FontData::from_owned(font_data)),
                 );
 
@@ -1487,9 +1550,24 @@ fn setup_fonts(ctx: &egui::Context) {
                     .families
                     .entry(egui::FontFamily::Proportional)
                     .or_default()
-                    .insert(0, "noto".to_owned());
+                    .insert(0, "cjk".to_owned());
+
+                fonts
+                    .families
+                    .entry(egui::FontFamily::Monospace)
+                    .or_default()
+                    .insert(0, "cjk".to_owned());
+
+                loaded = true;
                 break;
             }
+        }
+
+        if !loaded {
+            warn!(
+                "No CJK font found; non-Latin (e.g. Chinese) text may render as boxes. \
+                 Install Noto Sans CJK / Source Han Sans / WenQuanYi, or switch the UI language to English."
+            );
         }
     }
 
@@ -1499,11 +1577,36 @@ fn setup_fonts(ctx: &egui::Context) {
 /// Windows: 显示控制台窗口
 #[cfg(target_os = "windows")]
 fn show_console_window() {
-    use windows::Win32::System::Console::{AllocConsole, GetConsoleWindow};
+    use windows::core::w;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows::Win32::System::Console::{
+        AllocConsole, GetConsoleWindow, SetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOW};
 
     unsafe {
+        // GUI 子系统程序启动时没有控制台，先分配一个
         let _ = AllocConsole();
+
+        // 关键：把进程的标准输出/错误句柄重新指向新控制台，
+        // 否则 env_logger 写入 stderr 的日志不会显示在新分配的控制台里。
+        if let Ok(handle) = CreateFileW(
+            w!("CONOUT$"),
+            (FILE_GENERIC_READ | FILE_GENERIC_WRITE).0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            HANDLE::default(),
+        ) {
+            let _ = SetStdHandle(STD_OUTPUT_HANDLE, handle);
+            let _ = SetStdHandle(STD_ERROR_HANDLE, handle);
+        }
+
         let console_window = GetConsoleWindow();
         if !console_window.is_invalid() {
             let _ = ShowWindow(console_window, SW_SHOW);
@@ -1635,6 +1738,7 @@ fn show_main_window(ctx: &egui::Context, window_hwnd: Option<isize>) {
     ctx.request_repaint();
 }
 
+#[cfg(not(target_os = "linux"))]
 fn build_icon_from_rgba(
     rgba: Vec<u8>,
     width: u32,
@@ -1656,13 +1760,15 @@ fn build_icon_from_rgba(
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 fn fallback_icon() -> Option<(tray_icon::Icon, egui::IconData)> {
     const FALLBACK_ICON_SIZE: u32 = 32;
     let rgba = vec![0u8; (FALLBACK_ICON_SIZE * FALLBACK_ICON_SIZE * 4) as usize];
     build_icon_from_rgba(rgba, FALLBACK_ICON_SIZE, FALLBACK_ICON_SIZE)
 }
 
-/// 加载应用图标
+/// 加载应用图标（Windows / macOS：同时构建托盘图标与窗口图标）
+#[cfg(not(target_os = "linux"))]
 fn load_icon() -> (Option<tray_icon::Icon>, Option<egui::IconData>) {
     let icon_data = include_bytes!("logo.png");
 
@@ -1686,6 +1792,74 @@ fn load_icon() -> (Option<tray_icon::Icon>, Option<egui::IconData>) {
     icons
         .map(|(tray_icon, window_icon)| (Some(tray_icon), Some(window_icon)))
         .unwrap_or((None, None))
+}
+
+/// Linux：解码内嵌 logo 为原始 RGBA 像素（纯解码，不依赖 GTK）
+#[cfg(target_os = "linux")]
+fn load_icon_rgba() -> Option<(Vec<u8>, u32, u32)> {
+    let icon_data = include_bytes!("logo.png");
+    match image::load_from_memory(icon_data) {
+        Ok(image) => {
+            let image = image.into_rgba8();
+            let (width, height) = image.dimensions();
+            Some((image.into_raw(), width, height))
+        }
+        Err(e) => {
+            warn!("Failed to load icon data: {}", e);
+            None
+        }
+    }
+}
+
+/// Linux：仅构建窗口图标（托盘图标在 GTK 线程内单独构建）
+#[cfg(target_os = "linux")]
+fn load_window_icon() -> Option<egui::IconData> {
+    load_icon_rgba().map(|(rgba, width, height)| egui::IconData {
+        rgba,
+        width,
+        height,
+    })
+}
+
+/// Linux：在专用 GTK 线程上创建并运行系统托盘。
+///
+/// tray-icon / muda 在 Linux 上基于 GTK，要求在“已初始化 GTK 且持续 pump 事件”的
+/// 线程上创建托盘。eframe 使用 winit（无 GTK 循环），因此这里单开一个线程：
+/// 先 `gtk::init()`，构建托盘，再用 `gtk::main()` 跑 GTK 主循环（永不返回，从而让
+/// 托盘与菜单回调保持存活）。托盘菜单事件仍通过全局 `MenuEvent` 通道分发，由另一个
+/// 监控线程处理。`gtk::init()` 失败时优雅跳过托盘（也避免主线程因 GTK 未初始化而崩溃）。
+#[cfg(target_os = "linux")]
+fn spawn_linux_tray(i18n: I18n, tray_available: Arc<AtomicBool>) {
+    std::thread::spawn(move || {
+        if let Err(e) = gtk::init() {
+            warn!("GTK init failed; system tray disabled this session: {}", e);
+            return;
+        }
+
+        let icon = load_icon_rgba().and_then(|(rgba, w, h)| {
+            match tray_icon::Icon::from_rgba(rgba, w, h) {
+                Ok(icon) => Some(icon),
+                Err(e) => {
+                    warn!("Failed to build tray icon: {}", e);
+                    None
+                }
+            }
+        });
+
+        let _tray_context = match icon.and_then(|icon| create_tray_context(&i18n, icon)) {
+            Some(ctx) => ctx,
+            None => {
+                warn!("Failed to create system tray; tray disabled.");
+                return;
+            }
+        };
+
+        tray_available.store(true, Ordering::SeqCst);
+
+        // 运行 GTK 主循环以分发托盘/菜单事件；此调用不会返回，
+        // `_tray_context` 因此在该线程内保持存活。
+        gtk::main();
+    });
 }
 
 
@@ -1735,7 +1909,13 @@ fn main() -> eframe::Result<()> {
     }
 
     // 加载图标
+    #[cfg(not(target_os = "linux"))]
     let (tray_icon, window_icon) = load_icon();
+    // Linux：托盘图标在 GTK 线程里构建，这里只准备窗口图标，
+    // 避免在没有 GTK 循环的主线程上触碰托盘图标。
+    #[cfg(target_os = "linux")]
+    let (tray_icon, window_icon): (Option<tray_icon::Icon>, Option<egui::IconData>) =
+        (None, load_window_icon());
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([400.0, 500.0])

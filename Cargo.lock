@@ -832,6 +832,7 @@ dependencies = [
  "enigo",
  "env_logger",
  "global-hotkey",
+ "gtk",
  "image",
  "log",
  "rand",
