@@ -14,7 +14,7 @@ const MAX_SINGLE_ITEM_SIZE: usize = 10 * 1024 * 1024;
 /// 剪贴板历史记录的最大总内存（50MB）
 const MAX_TOTAL_MEMORY: usize = 50 * 1024 * 1024;
 
-use app_config::{AppConfig, CloseAction};
+use app_config::{AppConfig, CloseAction, TypingFormat};
 use arboard::Clipboard;
 use chrono::Local;
 use eframe::egui;
@@ -88,6 +88,8 @@ struct SharedState {
     typing_delay: Arc<Mutex<u64>>,
     /// 模拟输入时的随机偏差 (毫秒)，为 0 时不抖动
     typing_variance: Arc<Mutex<u64>>,
+    /// 模拟输入时对文本格式的处理方式
+    typing_format: Arc<Mutex<TypingFormat>>,
     /// 输入是否暂停
     typing_paused: Arc<Mutex<bool>>,
     /// 最近一次快捷键触发时间
@@ -115,6 +117,7 @@ impl SharedState {
             window_visible: Arc::new(AtomicBool::new(true)),
             typing_delay: Arc::new(Mutex::new(0)),
             typing_variance: Arc::new(Mutex::new(0)),
+            typing_format: Arc::new(Mutex::new(TypingFormat::Raw)),
             typing_paused: Arc::new(Mutex::new(false)),
             last_hotkey_trigger: Arc::new(Mutex::new(None)),
             hotkey_id: Arc::new(Mutex::new(None)),
@@ -317,12 +320,14 @@ impl SharedState {
         let state = self.clone();
         let delay = *self.typing_delay.lock().unwrap();
         let variance = *self.typing_variance.lock().unwrap();
+        let format = *self.typing_format.lock().unwrap();
 
         thread::spawn(move || {
             // 延迟输入，防止还未松开快捷键
             thread::sleep(Duration::from_millis(250));
 
-            let text = state.clipboard_text.lock().unwrap().clone();
+            // 按所选格式模式预处理后再输入
+            let text = format.apply(&state.clipboard_text.lock().unwrap());
 
             if text.is_empty() {
                 warn!("{}", state.t("log.clipboard_empty"));
@@ -491,6 +496,7 @@ impl CopyTypeApp {
         // 初始化 state 中的配置值
         *state.typing_delay.lock().unwrap() = app_config.typing_delay;
         *state.typing_variance.lock().unwrap() = app_config.typing_variance;
+        *state.typing_format.lock().unwrap() = app_config.typing_format;
         *state.history_enabled.lock().unwrap() = app_config.history_enabled;
         *state.history_max_items.lock().unwrap() = app_config.history_max_items;
 
@@ -1362,6 +1368,33 @@ impl eframe::App for CopyTypeApp {
                             }
                         });
 
+                        ui.horizontal(|ui| {
+                            ui.label(i18n.t("ui.app.label_typing_format"));
+                            let selected_text = match self.temp_app_config.typing_format {
+                                TypingFormat::Raw => i18n.t("ui.app.format_raw"),
+                                TypingFormat::StripIndent => i18n.t("ui.app.format_strip_indent"),
+                                TypingFormat::SingleLine => i18n.t("ui.app.format_single_line"),
+                            };
+                            egui::ComboBox::from_id_salt("typing_format")
+                                .selected_text(selected_text)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.temp_app_config.typing_format,
+                                        TypingFormat::Raw,
+                                        i18n.t("ui.app.format_raw"),
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.temp_app_config.typing_format,
+                                        TypingFormat::StripIndent,
+                                        i18n.t("ui.app.format_strip_indent"),
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.temp_app_config.typing_format,
+                                        TypingFormat::SingleLine,
+                                        i18n.t("ui.app.format_single_line"),
+                                    );
+                                });
+                        });
 
                         ui.label(egui::RichText::new(i18n.t("ui.app.typing_tip")).small().weak());
                     });
@@ -1418,6 +1451,7 @@ impl eframe::App for CopyTypeApp {
                             // 更新 state 中的配置
                             *self.state.typing_delay.lock().unwrap() = self.app_config.typing_delay;
                             *self.state.typing_variance.lock().unwrap() = self.app_config.typing_variance;
+                            *self.state.typing_format.lock().unwrap() = self.app_config.typing_format;
                             *self.state.history_enabled.lock().unwrap() = self.app_config.history_enabled;
                             *self.state.history_max_items.lock().unwrap() = self.app_config.history_max_items;
                             if self.app_config.history_enabled {

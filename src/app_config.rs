@@ -18,6 +18,38 @@ pub enum CloseAction {
     ExitApp,
 }
 
+/// 模拟输入时对文本格式的处理方式
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TypingFormat {
+    /// 原样输入，保留换行与行首缩进
+    #[default]
+    Raw,
+    /// 去除每行行首缩进，保留换行（适合有自动缩进的代码编辑器）
+    StripIndent,
+    /// 合并为单行，换行转空格（适合回车即发送的聊天框/搜索框）
+    SingleLine,
+}
+
+impl TypingFormat {
+    /// 按所选模式预处理待输入文本
+    pub fn apply(&self, text: &str) -> String {
+        match self {
+            TypingFormat::Raw => text.to_string(),
+            TypingFormat::StripIndent => text
+                .lines()
+                .map(|line| line.trim_start())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            TypingFormat::SingleLine => text
+                .lines()
+                .map(|line| line.trim())
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "),
+        }
+    }
+}
+
 /// 应用程序配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -34,6 +66,9 @@ pub struct AppConfig {
     /// 模拟输入时的随机偏差 (毫秒)，为 0 时不抖动
     #[serde(default = "default_typing_variance")]
     pub typing_variance: u64,
+    /// 模拟输入时对文本格式的处理方式
+    #[serde(default)]
+    pub typing_format: TypingFormat,
     /// 是否保存剪贴板历史
     #[serde(default)]
     pub history_enabled: bool,
@@ -72,6 +107,7 @@ impl Default for AppConfig {
             show_console: false,
             typing_delay: default_typing_delay(),
             typing_variance: default_typing_variance(),
+            typing_format: TypingFormat::Raw,
             history_enabled: false,
             history_max_items: default_history_max_items(),
             hotkey: HotkeyConfig::default(),

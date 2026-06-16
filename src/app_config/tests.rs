@@ -1,6 +1,6 @@
 //! Unit tests for application configuration.
 
-use super::{AppConfig, CloseAction};
+use super::{AppConfig, CloseAction, TypingFormat};
 use crate::hotkey_config::{HotkeyConfig, KeyCode};
 
 #[test]
@@ -11,6 +11,7 @@ fn defaults_are_sane() {
     assert!(!c.show_console);
     assert_eq!(c.typing_delay, 20);
     assert_eq!(c.typing_variance, 0);
+    assert_eq!(c.typing_format, TypingFormat::Raw);
     assert!(!c.history_enabled);
     assert_eq!(c.history_max_items, 20);
     assert_eq!(c.language, "zh-CN");
@@ -21,6 +22,37 @@ fn defaults_are_sane() {
 #[test]
 fn close_action_default_is_minimize() {
     assert_eq!(CloseAction::default(), CloseAction::MinimizeToTray);
+}
+
+#[test]
+fn typing_format_default_is_raw() {
+    assert_eq!(TypingFormat::default(), TypingFormat::Raw);
+}
+
+#[test]
+fn typing_format_raw_keeps_text_unchanged() {
+    let input = "  fn main() {\n    println!();\n}\n";
+    assert_eq!(TypingFormat::Raw.apply(input), input);
+}
+
+#[test]
+fn typing_format_strip_indent_removes_leading_whitespace_per_line() {
+    let input = "fn main() {\n    let x = 1;\n\tlet y = 2;\n}";
+    let expected = "fn main() {\nlet x = 1;\nlet y = 2;\n}";
+    assert_eq!(TypingFormat::StripIndent.apply(input), expected);
+}
+
+#[test]
+fn typing_format_single_line_joins_with_spaces_and_drops_blank_lines() {
+    let input = "  line one  \n\n   line two";
+    assert_eq!(TypingFormat::SingleLine.apply(input), "line one line two");
+}
+
+#[test]
+fn typing_format_handles_crlf_line_endings() {
+    let input = "a\r\n  b";
+    assert_eq!(TypingFormat::StripIndent.apply(input), "a\nb");
+    assert_eq!(TypingFormat::SingleLine.apply(input), "a b");
 }
 
 #[test]
@@ -49,6 +81,7 @@ fn deserialize_applies_serde_defaults() {
     assert!(c.start_minimized);
     assert_eq!(c.typing_delay, 20);
     assert_eq!(c.typing_variance, 0);
+    assert_eq!(c.typing_format, TypingFormat::Raw);
     assert_eq!(c.history_max_items, 20);
     assert_eq!(c.language, "zh-CN");
 }
