@@ -1,10 +1,8 @@
-
-
-#Ignore cursor AI rules
-.cursor\rules\codacy.mdc
-
-
-#Ignore vscode AI rules
-.github\instructions\codacy.instructions.md
-
+# Build output
 target/
+
+# Cursor AI rules
+.cursor/rules/codacy.mdc
+
+# VSCode AI rules
+.github/instructions/codacy.instructions.md

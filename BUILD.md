@@ -142,6 +142,15 @@ Use one of the options below to package the macOS app correctly.
    Replace `<crate-hash>` with the actual build directory under `target/release/build/`.
    If you build with a target triple, the path is `target/<target>/release/build/<crate-hash>/out/Info.plist`.
 
+### Gatekeeper note (unsigned builds)
+The CI-produced `.app` is **not code-signed or notarized**, so macOS Gatekeeper will block it on first launch.
+To open it: right-click the app → **Open** → confirm, or remove the quarantine attribute:
+```bash
+xattr -dr com.apple.quarantine "Copy&Type.app"
+```
+Because the app is ad-hoc/unsigned, its Accessibility authorization may be reset whenever the binary changes; re-grant it under
+System Settings → Privacy & Security → Accessibility if keyboard simulation stops working after an update.
+
 ## Linux .desktop installation
 The build script writes `copy-type.desktop` into `OUT_DIR`, which is not installed automatically.
 Use one of the options below to put it where desktop environments can find it.

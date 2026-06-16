@@ -14,7 +14,7 @@ A cross-platform clipboard monitor and keyboard input simulation tool, built wit
 - **Format Preservation**: Fully preserves text formatting such as newlines and indentation.
 - **Cross-Platform Support**: Supports Windows (primary), macOS, and Linux.
 - **GUI**: Provides a graphical interface for enabling/disabling, customizing shortcuts, and previewing text to be typed.
-- **Clipboard History**: Stores up to 100 items or the most recent 50MB of clipboard records.
+- **Clipboard History**: Configurable item count (1–100, default 20), bounded by a 50MB recent-memory cap.
 
 ## Use Cases
 
@@ -106,6 +106,13 @@ sudo apt-get install libx11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev
 # Fedora
 sudo dnf install libX11-devel libxcb-devel
 ```
+
+See [BUILD.md](BUILD.md) for the full build dependency list (GTK3, libxdo, etc.).
+
+> **Runtime notes (Linux)**
+> - Prefer an **X11 session**: under Wayland, global hotkeys and simulated keyboard input usually do not work (the app shows a hint in the permissions window).
+> - The system tray is built on GTK + AppIndicator and needs GTK3 plus an appindicator library (e.g. `libayatana-appindicator3`) at runtime.
+> - **GNOME** hides legacy tray icons by default; install the "AppIndicator and KStatusNotifierItem Support" extension, or set the close action to "Exit Program" in App Settings so closing the window doesn't strand the app with no tray to restore it. KDE / XFCE / MATE / Cinnamon generally show the tray out of the box.
 
 ### macOS
 Requires Accessibility permissions.
