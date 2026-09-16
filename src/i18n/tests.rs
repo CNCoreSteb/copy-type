@@ -73,3 +73,20 @@ fn parse_lang_bytes_strips_utf8_bom() {
     let map = parse_lang_bytes(with_bom);
     assert_eq!(map.get("s.k").map(String::as_str), Some("v"));
 }
+
+#[test]
+fn zh_cn_and_en_have_identical_key_sets() {
+    // 防止新增翻译只改了一个语言文件导致另一种语言回退到原始 key
+    let zh = parse_lang_bytes(include_bytes!("../../i18n/zh-CN.toml"));
+    let en = parse_lang_bytes(include_bytes!("../../i18n/en.toml"));
+
+    let missing_in_en: Vec<&String> = zh.keys().filter(|k| !en.contains_key(*k)).collect();
+    let missing_in_zh: Vec<&String> = en.keys().filter(|k| !zh.contains_key(*k)).collect();
+
+    assert!(
+        missing_in_en.is_empty() && missing_in_zh.is_empty(),
+        "i18n key mismatch — missing in en: {:?}; missing in zh-CN: {:?}",
+        missing_in_en,
+        missing_in_zh
+    );
+}
