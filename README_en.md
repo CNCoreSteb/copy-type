@@ -14,7 +14,10 @@ A cross-platform clipboard monitor and keyboard input simulation tool, built wit
 - **Format Preservation**: Fully preserves text formatting such as newlines and indentation.
 - **Cross-Platform Support**: Supports Windows (primary), macOS, and Linux.
 - **GUI**: Provides a graphical interface for enabling/disabling, customizing shortcuts, and previewing text to be typed.
-- **Clipboard History**: Configurable item count (1–100, default 20), bounded by a 50MB recent-memory cap.
+- **Clipboard History**: Configurable item count (1–100, default 20), bounded by a 50MB recent-memory cap. Consecutive duplicates are merged, and clicking a history entry reloads it as the pending text.
+- **Controllable Typing**: Press the shortcut again mid-typing to pause/resume; click "Stop" or toggle the app off to cancel, with live progress shown.
+- **Single Instance**: A second launch warns that the app is already running and exits.
+- **File Logging**: Logs are written to `logs/copy-type.log` under the config directory (auto-rotated at 2MB) for troubleshooting.
 
 ## Use Cases
 
@@ -27,12 +30,13 @@ A cross-platform clipboard monitor and keyboard input simulation tool, built wit
 
 - Enable/disable program toggle.
 - Custom shortcut settings.
-- Real-time display of clipboard content pending input.
+- Real-time display of clipboard content pending input (large text is auto-truncated in preview).
 - Character and line count statistics.
 - Manual input trigger button.
+- Live typing progress with a "Stop" button.
 - Clear clipboard content.
 - Input speed adjustment.
-- Clipboard history toggle.
+- Clipboard history toggle with clickable entries.
 
 ## Default Shortcut
 
@@ -91,6 +95,8 @@ Configuration files are stored at:
 - Windows: `%APPDATA%\copy-type\config.json`
 - macOS: `~/Library/Application Support/copy-type/config.json`
 - Linux: `~/.config/copy-type/config.json`
+
+Logs are written to `logs/copy-type.log` in the same directory (rotated to `copy-type.old.log` past 2MB).
 
 ## Platform Dependencies
 
