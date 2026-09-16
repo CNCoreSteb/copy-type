@@ -1,18 +1,20 @@
-name: Build Only
+name: Build & Test
 
-on: 
-  push:  
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
     branches: [ "main" ]
 
 env:
   CARGO_TERM_COLOR: always
 
-jobs:  
+jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix: 
+      matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
@@ -25,13 +27,18 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v1
-      with: 
+      with:
         toolchain: stable
         target: ${{ matrix.target }}
-    
+
+    - name: Cache cargo artifacts
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.target }}
+
     - name: Install Linux build deps
       if: matrix.os == 'ubuntu-latest'
       run: |
@@ -56,11 +63,14 @@ jobs:
           libegl1-mesa-dev \
           pkg-config
 
+    - name: Run tests
+      run: cargo test --target ${{ matrix.target }} --verbose
+
     - name: Install cargo-deb
       if: matrix.os == 'ubuntu-latest'
       run: cargo install cargo-deb --locked
-    
-    # 只进行编译，验证代码能否在各平台成功构建
+
+    # 编译验证代码能否在各平台成功构建
     - name: Build
       run: cargo build --release --target ${{ matrix.target }} --verbose
 
