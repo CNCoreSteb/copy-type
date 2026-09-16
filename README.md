@@ -14,7 +14,7 @@
 - **保留格式**：完整保留换行符、缩进等文本格式
 - **跨平台支持**：支持 Windows（主要）、macOS 和 Linux
 - **图形界面**：提供图形界面，支持启用/禁用、自定义快捷键、预览待输入文本
-- **剪贴板历史**：存储最多100条或最近50MB的剪贴板记录
+- **剪贴板历史**：可配置保存条数（1–100，默认 20），并受最近 50MB 内存上限约束
 
 ## 使用场景
 
@@ -107,6 +107,13 @@ sudo apt-get install libx11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev
 # Fedora
 sudo dnf install libX11-devel libxcb-devel
 ```
+
+完整的构建依赖（含 GTK3、libxdo 等）见 [BUILD.md](BUILD.md)。
+
+> **运行时提示（Linux）**
+> - 建议在 **X11 会话**下使用：Wayland 下全局快捷键与模拟键盘输入通常不可用（程序会在权限窗口给出提示）。
+> - 系统托盘基于 GTK + AppIndicator，运行时需要 GTK3 及 appindicator 库（如 `libayatana-appindicator3`）。
+> - **GNOME** 默认不显示传统托盘，需安装 “AppIndicator and KStatusNotifierItem Support” 扩展；若不安装，建议在「应用设置」里把关闭行为设为「退出程序」，以免关窗后无托盘可恢复。KDE / XFCE / MATE / Cinnamon 一般可直接显示托盘。
 
 ### macOS
 需要授予辅助功能权限

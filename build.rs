@@ -1,6 +1,6 @@
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "macos")]
 use std::fs;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "macos")]
 use std::path::Path;
 
 fn main() {
@@ -18,12 +18,14 @@ fn main() {
         res.set("OriginalFilename", "copy-type.exe");
         
         res.compile().unwrap();
+        println!("cargo:rerun-if-changed=src/logo.ico");
     }
 
-    // macOS 平台：生成 Info.plist
+    // macOS 平台：生成 Info.plist（版本号跟随 Cargo.toml，防止漂移）
     #[cfg(target_os = "macos")]
     {
-        let info_plist = r#"<?xml version="1.0" encoding="UTF-8"?>
+        let version = env!("CARGO_PKG_VERSION");
+        let info_plist = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -34,9 +36,9 @@ fn main() {
     <key>CFBundleIdentifier</key>
     <string>com.coresteb.copy-type</string>
     <key>CFBundleVersion</key>
-    <string>1.1.0</string>
+    <string>{version}</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.1.0</string>
+    <string>{version}</string>
     <key>CFBundleExecutable</key>
     <string>copy-type</string>
     <key>CFBundlePackageType</key>
@@ -50,36 +52,13 @@ fn main() {
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>
-</plist>"#;
-        
+</plist>"#);
+
         let out_dir = std::env::var("OUT_DIR")
             .expect("OUT_DIR is not set; Cargo should provide it during builds");
         let info_plist_path = Path::new(&out_dir).join("Info.plist");
         fs::write(info_plist_path, info_plist)
             .expect("failed to write Info.plist to OUT_DIR");
-        println!("cargo:rerun-if-changed=build.rs");
-    }
-
-    // Linux 平台：生成 .desktop 文件
-    #[cfg(target_os = "linux")]
-    {
-        let desktop_entry = r#"[Desktop Entry]
-Type=Application
-Name=Copy&Type
-GenericName=Clipboard Monitor
-Comment=跨平台剪贴板监控和键盘输入模拟工具
-Exec=copy-type
-Icon=copy-type
-Terminal=false
-Categories=Utility;
-Keywords=clipboard;keyboard;typing;
-"#;
-        
-        let out_dir = std::env::var("OUT_DIR")
-            .expect("OUT_DIR is not set; Cargo should provide it during builds");
-        let desktop_path = Path::new(&out_dir).join("copy-type.desktop");
-        fs::write(desktop_path, desktop_entry)
-            .expect("failed to write copy-type.desktop to OUT_DIR");
         println!("cargo:rerun-if-changed=build.rs");
     }
 }

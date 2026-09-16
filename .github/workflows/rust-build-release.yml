@@ -1,19 +1,25 @@
-name: Release Build Only
+name: Release Build
 
-# 核心修改：只有在发布 Release (点击 Published) 时触发
-on: 
+# 触发方式：
+# 1. GitHub 页面发布 Release（types: published）→ 构件上传到该 Release
+# 2. 推送 v* 标签（git tag v1.2.0 && git push --tags）→ 自动创建 Release 并上传构件
+# 3. 手动 workflow_dispatch → 只构建并上传 Artifacts，不上传 Release
+on:
   release:
     types: [published]
+  push:
+    tags: [ "v*" ]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
-jobs:  
+jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix: 
+      matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
@@ -34,13 +40,18 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v1
-      with: 
+      with:
         toolchain: stable
         target: ${{ matrix.target }}
-    
+
+    - name: Cache cargo artifacts
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.target }}
+
     - name: Install Linux build deps
       if: matrix.os == 'ubuntu-latest'
       run: |
@@ -68,14 +79,17 @@ jobs:
     - name: Install cargo-deb
       if: matrix.os == 'ubuntu-latest'
       run: cargo install cargo-deb --locked
-    
+
+    - name: Run tests
+      run: cargo test --target ${{ matrix.target }} --verbose
+
     - name: Build
       run: cargo build --release --target ${{ matrix.target }} --verbose
-    
+
     - name: Strip binary (Linux and macOS)
       if: matrix.os != 'windows-latest'
       run: strip target/${{ matrix.target }}/release/${{ matrix.binary_name }}
-    
+
     - name: Build Linux package (.deb)
       if: matrix.os == 'ubuntu-latest'
       run: cargo deb --target ${{ matrix.target }} --no-build --verbose
@@ -113,37 +127,47 @@ jobs:
           cp "$DEB_PATH" "artifacts/${{ matrix.asset_name }}"
         fi
 
+    - name: Generate SHA256 checksums
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd artifacts
+        sha256sum "${{ matrix.asset_name }}" > "${{ matrix.asset_name }}.sha256"
+
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
-      with: 
+      with:
         name: ${{ matrix.asset_name }}
-        path: artifacts/${{ matrix.asset_name }}
+        path: artifacts/${{ matrix.asset_name }}*
         if-no-files-found: error
 
   upload-to-release:
     needs: build
     runs-on: ubuntu-latest
-    permissions: 
+    # workflow_dispatch 且非 tag 引用时，只构建不上传 Release
+    if: github.event_name != 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    permissions:
       contents: write
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     # 下载所有构建好的文件
     - name: Download all artifacts
       uses: actions/download-artifact@v4
-      with: 
+      with:
         path: artifacts
-        pattern: '*' # 下载所有名字的构件
-        merge-multiple: true # 将它们合并到同一个文件夹中，不要子文件夹
-    
+        pattern: '*'
+        merge-multiple: true
+
     - name: List artifacts to be uploaded
       run: ls -R artifacts
-    
-    # 将文件上传到当前的 Release 页面
+
+    # 将文件上传到 Release 页面；tag 推送触发时若 Release 不存在会自动创建
     - name: Upload to Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         files: artifacts/*
+        generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+#[cfg(test)]
+mod tests;
+
 /// Simple i18n helper that loads translations from embedded TOML files.
 #[derive(Clone)]
 pub struct I18n {
@@ -43,7 +46,7 @@ impl I18n {
     }
 
     /// Translate a key with placeholder replacements (`%{name}`).
-    pub fn tr<'a>(&self, key: &str, args: &[(&str, &'a str)]) -> String {
+    pub fn tr(&self, key: &str, args: &[(&str, &str)]) -> String {
         let lang = self.current_language();
         let text = self
             .lookup(&lang, key)

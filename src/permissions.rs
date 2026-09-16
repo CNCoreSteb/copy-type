@@ -185,7 +185,17 @@ fn check_linux_permissions(i18n: &I18n) -> PermissionStatus {
             issues.push(i18n.t("permissions.linux.add_to_input_group"));
         }
     }
-    
+
+    // 检测 Wayland 会话：全局快捷键 / 键盘模拟在原生 Wayland 上通常不可用
+    let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok()
+        || std::env::var("XDG_SESSION_TYPE")
+            .map(|s| s.eq_ignore_ascii_case("wayland"))
+            .unwrap_or(false);
+    if is_wayland {
+        warn!("{}", i18n.t("permissions.linux.wayland_warning"));
+        issues.push(i18n.t("permissions.linux.wayland_warning"));
+    }
+
     PermissionStatus {
         keyboard_simulation: keyboard_ok,
         clipboard_access: clipboard_ok,

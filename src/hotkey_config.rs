@@ -3,8 +3,11 @@
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+mod tests;
+
 /// 支持的按键列表
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum KeyCode {
     A,
     B,
@@ -27,6 +30,7 @@ pub enum KeyCode {
     S,
     T,
     U,
+    #[default]
     V,
     W,
     X,
@@ -233,12 +237,6 @@ impl KeyCode {
             KeyCode::Tab => Code::Tab,
             KeyCode::Backquote => Code::Backquote,
         }
-    }
-}
-
-impl Default for KeyCode {
-    fn default() -> Self {
-        KeyCode::V
     }
 }
 
