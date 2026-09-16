@@ -1,7 +1,8 @@
 //! Unit tests for top-level helpers and the shared clipboard-history state.
 
 use super::{
-    format_history_timestamp, truncate_text, SharedState, MAX_SINGLE_ITEM_SIZE, MAX_TOTAL_MEMORY,
+    char_preview, format_history_timestamp, truncate_text, SharedState, MAX_SINGLE_ITEM_SIZE,
+    MAX_TOTAL_MEMORY,
 };
 use crate::i18n::I18n;
 
@@ -98,14 +99,36 @@ fn record_history_rejects_oversized_item() {
 #[test]
 fn record_history_evicts_to_stay_under_total_memory() {
     let state = history_state(100);
-    let nine_mb = "a".repeat(9 * 1024 * 1024);
-    for _ in 0..6 {
-        state.record_history(nine_mb.clone());
+    // 连续相同内容会被去重，所以每条加不同前缀
+    for i in 0..6 {
+        state.record_history(format!("{}{}", i, "a".repeat(9 * 1024 * 1024)));
     }
-    // 9MB * 6 = 54MB > 50MB cap, so the oldest item is evicted, leaving 5.
+    // (9MB+1) * 6 > 50MB cap, so the oldest item is evicted, leaving 5.
     assert_eq!(state.clipboard_history.lock().unwrap().len(), 5);
     assert!(memory(&state) <= MAX_TOTAL_MEMORY);
-    assert_eq!(memory(&state), 5 * 9 * 1024 * 1024);
+    assert_eq!(memory(&state), 5 * (9 * 1024 * 1024 + 1));
+}
+
+#[test]
+fn record_history_dedups_consecutive_identical_text() {
+    let state = history_state(10);
+    state.record_history("same".to_string());
+    state.record_history("same".to_string());
+    // 连续重复只刷新时间戳，不入新条目
+    assert_eq!(texts(&state), owned(&["same"]));
+    assert_eq!(memory(&state), 4);
+
+    state.record_history("other".to_string());
+    state.record_history("same".to_string()); // 非连续 → 正常入栈
+    assert_eq!(texts(&state), owned(&["same", "other", "same"]));
+}
+
+#[test]
+fn history_item_preview_is_truncated_by_chars() {
+    let item = super::HistoryItem::new("x".repeat(500));
+    assert_eq!(item.preview.chars().count(), super::HISTORY_PREVIEW_CHARS + 1);
+    assert!(item.preview.ends_with('…'));
+    assert_eq!(item.text.len(), 500); // 原文完整保留
 }
 
 #[test]
@@ -137,6 +160,22 @@ fn trim_history_with_zero_max_clears_all() {
     state.trim_history();
     assert!(texts(&state).is_empty());
     assert_eq!(memory(&state), 0);
+}
+
+#[test]
+fn char_preview_short_text_unchanged() {
+    assert_eq!(char_preview("hello", 10), "hello");
+}
+
+#[test]
+fn char_preview_long_text_appends_ellipsis() {
+    assert_eq!(char_preview("hello world", 5), "hello…");
+}
+
+#[test]
+fn char_preview_respects_char_boundaries() {
+    // 中文按字符截断而非字节
+    assert_eq!(char_preview("你好世界呀", 3), "你好世…");
 }
 
 #[test]

@@ -25,9 +25,11 @@ use i18n::I18n;
 use log::{debug, error, info, warn};
 use permissions::{check_permissions, get_permission_fix_instructions, PermissionStatus};
 use rand::Rng;
+use std::collections::VecDeque;
+use std::io::Write;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, MutexGuard,
 };
 use std::thread;
 use std::time::{Duration, Instant};
@@ -38,20 +40,36 @@ use tray_icon::{
 #[cfg(target_os = "windows")]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+/// 主面板预览最多渲染的字符数（大文本不整段排版，避免卡死 UI）
+const PREVIEW_MAX_CHARS: usize = 2000;
+/// 历史记录列表每项预览的字符数
+const HISTORY_PREVIEW_CHARS: usize = 300;
+/// 日志文件超过该大小时轮转为 .old（2MB）
+const LOG_FILE_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
 /// 托盘菜单项 ID
 const MENU_SHOW: &str = "show";
 const MENU_TOGGLE: &str = "toggle";
 const MENU_EXIT: &str = "exit";
 
+/// 获取 Mutex 锁；锁被毒化（持有者 panic）时恢复数据而不是级联 panic。
+/// 本程序锁内均为纯数据，恢复访问比重启整个进程更安全。
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[derive(Clone)]
 struct HistoryItem {
     text: String,
+    /// 列表展示用的截断预览，入栈时算好，避免每帧对全量文本排版
+    preview: String,
     copied_at: String,
 }
 
 impl HistoryItem {
     fn new(text: String) -> Self {
         Self {
+            preview: char_preview(&text, HISTORY_PREVIEW_CHARS),
             text,
             copied_at: format_history_timestamp(),
         }
@@ -61,12 +79,12 @@ impl HistoryItem {
 /// 共享应用状态
 #[derive(Clone)]
 struct SharedState {
-    /// 当前保存的剪贴板文本
-    clipboard_text: Arc<Mutex<String>>,
-    /// 上一次的剪贴板文本（用于检测变化）
+    /// 当前保存的剪贴板文本（Arc<str>：UI 每帧取用时只增加引用计数，不复制内容）
+    clipboard_text: Arc<Mutex<Arc<str>>>,
+    /// 上一次的剪贴板文本（用于检测变化；Windows 上主要靠剪贴板序号检测）
     last_clipboard_text: Arc<Mutex<String>>,
-    /// 剪贴板历史记录
-    clipboard_history: Arc<Mutex<Vec<HistoryItem>>>,
+    /// 剪贴板历史记录（队首为最旧记录）
+    clipboard_history: Arc<Mutex<VecDeque<HistoryItem>>>,
     /// 剪贴板历史记录占用的总内存（字节）
     history_memory_used: Arc<Mutex<usize>>,
     /// 是否保存剪贴板历史
@@ -81,9 +99,6 @@ struct SharedState {
     status_message: Arc<Mutex<String>>,
     /// 请求退出程序
     request_exit: Arc<AtomicBool>,
-    /// 窗口是否可见
-    #[allow(dead_code)]
-    window_visible: Arc<AtomicBool>,
     /// 模拟输入时的延迟 (毫秒)
     typing_delay: Arc<Mutex<u64>>,
     /// 模拟输入时的随机偏差 (毫秒)，为 0 时不抖动
@@ -92,10 +107,16 @@ struct SharedState {
     typing_format: Arc<Mutex<TypingFormat>>,
     /// 输入是否暂停
     typing_paused: Arc<Mutex<bool>>,
+    /// 请求取消当前输入
+    typing_cancelled: Arc<AtomicBool>,
+    /// 输入进度（已完成字符数, 总字符数）
+    typing_progress: Arc<Mutex<(usize, usize)>>,
     /// 最近一次快捷键触发时间
     last_hotkey_trigger: Arc<Mutex<Option<Instant>>>,
     /// 当前快捷键 ID
     hotkey_id: Arc<Mutex<Option<u32>>>,
+    /// 后台线程状态变化时用于唤醒 UI 重绘的上下文
+    repaint_ctx: Arc<Mutex<Option<egui::Context>>>,
     /// 语言资源
     i18n: I18n,
 }
@@ -104,9 +125,9 @@ impl SharedState {
     fn new(i18n: I18n) -> Self {
         let ready = i18n.t("status.ready");
         Self {
-            clipboard_text: Arc::new(Mutex::new(String::new())),
+            clipboard_text: Arc::new(Mutex::new(Arc::from(""))),
             last_clipboard_text: Arc::new(Mutex::new(String::new())),
-            clipboard_history: Arc::new(Mutex::new(Vec::new())),
+            clipboard_history: Arc::new(Mutex::new(VecDeque::new())),
             history_memory_used: Arc::new(Mutex::new(0)),
             history_enabled: Arc::new(Mutex::new(false)),
             history_max_items: Arc::new(Mutex::new(0)),
@@ -114,58 +135,85 @@ impl SharedState {
             enabled: Arc::new(Mutex::new(true)),
             status_message: Arc::new(Mutex::new(ready)),
             request_exit: Arc::new(AtomicBool::new(false)),
-            window_visible: Arc::new(AtomicBool::new(true)),
             typing_delay: Arc::new(Mutex::new(0)),
             typing_variance: Arc::new(Mutex::new(0)),
             typing_format: Arc::new(Mutex::new(TypingFormat::Raw)),
             typing_paused: Arc::new(Mutex::new(false)),
+            typing_cancelled: Arc::new(AtomicBool::new(false)),
+            typing_progress: Arc::new(Mutex::new((0, 0))),
             last_hotkey_trigger: Arc::new(Mutex::new(None)),
             hotkey_id: Arc::new(Mutex::new(None)),
+            repaint_ctx: Arc::new(Mutex::new(None)),
             i18n,
         }
     }
 
+    /// 记录 egui 上下文，使后台线程的状态变更能立即触发重绘，
+    /// 代替原先固定的 50ms 轮询重绘。
+    fn set_repaint_ctx(&self, ctx: egui::Context) {
+        *lock(&self.repaint_ctx) = Some(ctx);
+    }
+
+    fn request_repaint(&self) {
+        if let Some(ctx) = lock(&self.repaint_ctx).as_ref() {
+            ctx.request_repaint();
+        }
+    }
+
     fn set_status(&self, msg: &str) {
-        *self.status_message.lock().unwrap() = msg.to_string();
+        *lock(&self.status_message) = msg.to_string();
+        self.request_repaint();
     }
 
     fn get_status(&self) -> String {
-        self.status_message.lock().unwrap().clone()
+        lock(&self.status_message).clone()
     }
 
     fn is_enabled(&self) -> bool {
-        *self.enabled.lock().unwrap()
+        *lock(&self.enabled)
     }
 
     fn set_enabled(&self, enabled: bool) {
-        *self.enabled.lock().unwrap() = enabled;
+        *lock(&self.enabled) = enabled;
+        if !enabled {
+            // 禁用程序即停止正在进行的输入
+            self.typing_cancelled.store(true, Ordering::SeqCst);
+        }
     }
 
-    fn get_clipboard_text(&self) -> String {
-        self.clipboard_text.lock().unwrap().clone()
+    /// 返回暂存文本的引用（零拷贝，供 UI 每帧调用）
+    fn get_clipboard_text(&self) -> Arc<str> {
+        lock(&self.clipboard_text).clone()
     }
 
     fn is_typing(&self) -> bool {
-        *self.is_typing.lock().unwrap()
+        *lock(&self.is_typing)
+    }
+
+    fn cancel_typing(&self) {
+        self.typing_cancelled.store(true, Ordering::SeqCst);
+        self.request_repaint();
     }
 
     fn toggle_typing_pause(&self) -> bool {
-        let mut paused = self.typing_paused.lock().unwrap();
+        let mut paused = lock(&self.typing_paused);
         *paused = !*paused;
         *paused
     }
 
-    fn wait_if_paused(&self) {
-        loop {
-            if !*self.typing_paused.lock().unwrap() {
-                break;
+    /// 暂停期间自旋等待；返回 false 表示期间收到取消请求，调用方应中止输入。
+    fn wait_if_paused(&self) -> bool {
+        while *lock(&self.typing_paused) {
+            if self.typing_cancelled.load(Ordering::SeqCst) {
+                return false;
             }
             thread::sleep(Duration::from_millis(50));
         }
+        !self.typing_cancelled.load(Ordering::SeqCst)
     }
 
     fn should_handle_hotkey(&self) -> bool {
-        let mut last = self.last_hotkey_trigger.lock().unwrap();
+        let mut last = lock(&self.last_hotkey_trigger);
         let now = Instant::now();
         if let Some(prev) = *last {
             if now.duration_since(prev) < Duration::from_millis(200) {
@@ -183,18 +231,45 @@ impl SharedState {
         self.i18n.tr(key, args)
     }
 
+    /// 将新文本设为待输入内容并写入历史记录（监控线程与输入线程共用入口）
+    fn stage_text(&self, text: String) {
+        let len_str = text.len().to_string();
+        info!(
+            "{}",
+            self.tr("log.clipboard_changed", &[("len", len_str.as_str())])
+        );
+
+        // truncate_text 已按字符边界安全截断并转义换行
+        let preview = truncate_text(&text, 50);
+        debug!(
+            "{}",
+            self.tr("log.clipboard_preview", &[("preview", preview.as_str())])
+        );
+
+        *lock(&self.clipboard_text) = Arc::from(text.as_str());
+        *lock(&self.last_clipboard_text) = text.clone();
+        self.record_history(text);
+        self.request_repaint();
+    }
+
+    /// 从历史记录载入为待输入文本（不重复写入历史）
+    fn stage_from_history(&self, text: String) {
+        *lock(&self.clipboard_text) = Arc::from(text.as_str());
+        self.request_repaint();
+    }
+
     fn record_history(&self, text: String) {
-        if !*self.history_enabled.lock().unwrap() {
+        if !*lock(&self.history_enabled) {
             return;
         }
-        let max_items = *self.history_max_items.lock().unwrap();
+        let max_items = *lock(&self.history_max_items);
         if max_items == 0 {
             return;
         }
-        
+
         // 计算文本大小（字节）
         let text_size = text.len();
-        
+
         // 如果单条文本超过10MB，则不存储
         if text_size > MAX_SINGLE_ITEM_SIZE {
             warn!(
@@ -209,39 +284,47 @@ impl SharedState {
             );
             return;
         }
-        
-        let mut history = self.clipboard_history.lock().unwrap();
-        let mut memory_used = self.history_memory_used.lock().unwrap();
-        
+
+        let mut history = lock(&self.clipboard_history);
+        let mut memory_used = lock(&self.history_memory_used);
+
+        // 连续重复复制相同内容不重复入栈，仅刷新最新记录的时间戳
+        if let Some(back) = history.back_mut() {
+            if back.text == text {
+                back.copied_at = format_history_timestamp();
+                return;
+            }
+        }
+
         // 如果新增后总内存超过50MB，删除最旧的记录直到能够放下
         while *memory_used + text_size > MAX_TOTAL_MEMORY && !history.is_empty() {
-            let removed = history.remove(0);
-            let removed_size = removed.text.len();
-            *memory_used = memory_used.saturating_sub(removed_size);
-            debug!(
-                "{}",
-                self.tr(
-                    "log.removed_old_item",
-                    &[
-                        ("size", &format!("{:.2}KB", removed_size as f64 / 1024.0)),
-                        ("remaining", &format!("{:.2}MB", *memory_used as f64 / 1024.0 / 1024.0))
-                    ]
-                )
-            );
+            if let Some(removed) = history.pop_front() {
+                let removed_size = removed.text.len();
+                *memory_used = memory_used.saturating_sub(removed_size);
+                debug!(
+                    "{}",
+                    self.tr(
+                        "log.removed_old_item",
+                        &[
+                            ("size", &format!("{:.2}KB", removed_size as f64 / 1024.0)),
+                            ("remaining", &format!("{:.2}MB", *memory_used as f64 / 1024.0 / 1024.0))
+                        ]
+                    )
+                );
+            }
         }
-        
+
         // 添加新记录
-        history.push(HistoryItem::new(text));
+        history.push_back(HistoryItem::new(text));
         *memory_used += text_size;
-        
+
         // 检查是否超出条数限制
-        if history.len() > max_items as usize {
-            let overflow = history.len() - max_items as usize;
-            for item in history.drain(0..overflow) {
+        while history.len() > max_items as usize {
+            if let Some(item) = history.pop_front() {
                 *memory_used = memory_used.saturating_sub(item.text.len());
             }
         }
-        
+
         debug!(
             "{}",
             self.tr(
@@ -258,8 +341,8 @@ impl SharedState {
     }
 
     fn clear_history(&self) {
-        let mut history = self.clipboard_history.lock().unwrap();
-        let mut memory_used = self.history_memory_used.lock().unwrap();
+        let mut history = lock(&self.clipboard_history);
+        let mut memory_used = lock(&self.history_memory_used);
         history.clear();
         *memory_used = 0;
 
@@ -268,16 +351,15 @@ impl SharedState {
     }
 
     fn trim_history(&self) {
-        let max_items = *self.history_max_items.lock().unwrap();
+        let max_items = *lock(&self.history_max_items);
         if max_items == 0 {
             self.clear_history();
             return;
         }
-        let mut history = self.clipboard_history.lock().unwrap();
-        let mut memory_used = self.history_memory_used.lock().unwrap();
-        if history.len() > max_items as usize {
-            let overflow = history.len() - max_items as usize;
-            for item in history.drain(0..overflow) {
+        let mut history = lock(&self.clipboard_history);
+        let mut memory_used = lock(&self.history_memory_used);
+        while history.len() > max_items as usize {
+            if let Some(item) = history.pop_front() {
                 *memory_used = memory_used.saturating_sub(item.text.len());
             }
         }
@@ -287,7 +369,7 @@ impl SharedState {
     }
 
     #[cfg(debug_assertions)]
-    fn assert_history_memory_sync(history: &[HistoryItem], memory_used: usize) {
+    fn assert_history_memory_sync(history: &VecDeque<HistoryItem>, memory_used: usize) {
         let computed: usize = history.iter().map(|item| item.text.len()).sum();
         debug_assert_eq!(
             memory_used,
@@ -297,7 +379,7 @@ impl SharedState {
             computed
         );
     }
-    
+
     /// 执行模拟输入逻辑
     fn execute_typing(&self) {
         if !self.is_enabled() {
@@ -307,7 +389,7 @@ impl SharedState {
 
         // 检查是否正在输入
         {
-            let mut typing = self.is_typing.lock().unwrap();
+            let mut typing = lock(&self.is_typing);
             if *typing {
                 warn!("{}", self.t("log.request_ignored_typing"));
                 return;
@@ -315,27 +397,46 @@ impl SharedState {
             *typing = true;
         }
 
-        *self.typing_paused.lock().unwrap() = false;
+        *lock(&self.typing_paused) = false;
+        self.typing_cancelled.store(false, Ordering::SeqCst);
         self.set_status(&self.t("status.typing"));
         let state = self.clone();
-        let delay = *self.typing_delay.lock().unwrap();
-        let variance = *self.typing_variance.lock().unwrap();
-        let format = *self.typing_format.lock().unwrap();
+        let delay = *lock(&self.typing_delay);
+        let variance = *lock(&self.typing_variance);
+        let format = *lock(&self.typing_format);
 
         thread::spawn(move || {
+            // 无论线程如何退出（含 panic），都复位输入相关标志，
+            // 避免 is_typing 卡死导致重启前无法再输入。
+            let _guard = TypingGuard::new(state.clone());
+
             // 延迟输入，防止还未松开快捷键
             thread::sleep(Duration::from_millis(250));
 
+            // 优先实时读取系统剪贴板：若禁用期间复制了新内容、
+            // 或监控线程还没来得及轮询，也能输入最新文本。
+            // 读取失败/为空则回退到监控线程暂存的内容。
+            let raw = match Clipboard::new().and_then(|mut cb| cb.get_text()) {
+                Ok(t) if !t.is_empty() => {
+                    // 同步暂存状态与历史，保证预览与实际输入一致
+                    state.stage_text(t.clone());
+                    t
+                }
+                _ => state.get_clipboard_text().to_string(),
+            };
+
             // 按所选格式模式预处理后再输入
-            let text = format.apply(&state.clipboard_text.lock().unwrap());
+            let text = format.apply(&raw);
 
             if text.is_empty() {
                 warn!("{}", state.t("log.clipboard_empty"));
                 state.set_status(&state.t("status.clipboard_empty"));
-                *state.typing_paused.lock().unwrap() = false;
-                *state.is_typing.lock().unwrap() = false;
                 return;
             }
+
+            let total = text.chars().count();
+            *lock(&state.typing_progress) = (0, total);
+            state.request_repaint();
 
             let len_str = text.len().to_string();
             let delay_str = delay.to_string();
@@ -360,42 +461,59 @@ impl SharedState {
                     let err = e.to_string();
                     error!("{}", state.tr("log.input_init_error", &[("err", err.as_str())]));
                     state.set_status(&state.tr("status.input_init_error", &[("err", err.as_str())]));
-                    *state.typing_paused.lock().unwrap() = false;
-                    *state.is_typing.lock().unwrap() = false;
                     return;
                 }
             };
 
             let mut result = Ok(());
             let mut rng = rand::thread_rng();
+            // 复用缓冲区，避免每个字符都分配 String
+            let mut buf = [0u8; 4];
+            let mut done = 0usize;
 
-            for c in text.chars() {
-                state.wait_if_paused();
-                if let Err(e) = enigo.text(&c.to_string()) {
+            'typing: for c in text.chars() {
+                if state.typing_cancelled.load(Ordering::SeqCst) || !state.wait_if_paused() {
+                    break;
+                }
+                if let Err(e) = enigo.text(c.encode_utf8(&mut buf)) {
                     result = Err(e);
                     break;
                 }
+                done += 1;
+                *lock(&state.typing_progress) = (done, total);
 
-                 // 计算实际延迟
+                // 计算实际延迟：在 [delay, delay + variance] 之间随机
                 let mut actual_delay = delay;
                 if variance > 0 {
-                    // 在 [delay, delay + variance] 之间随机
-                    let v = rng.gen_range(0..=variance);
-                    actual_delay += v;
+                    actual_delay += rng.gen_range(0..=variance);
                 }
 
-                if actual_delay > 0 {
-                    let mut remaining = actual_delay;
-                    while remaining > 0 {
-                        state.wait_if_paused();
-                        let step = remaining.min(50);
-                        thread::sleep(Duration::from_millis(step));
-                        remaining -= step;
+                let mut remaining = actual_delay;
+                while remaining > 0 {
+                    if state.typing_cancelled.load(Ordering::SeqCst) {
+                        break 'typing;
                     }
+                    if !state.wait_if_paused() {
+                        break 'typing;
+                    }
+                    let step = remaining.min(50);
+                    thread::sleep(Duration::from_millis(step));
+                    remaining -= step;
                 }
             }
 
-            if let Err(e) = result {
+            if state.typing_cancelled.load(Ordering::SeqCst) {
+                let done_str = done.to_string();
+                let total_str = total.to_string();
+                info!(
+                    "{}",
+                    state.tr(
+                        "log.input_cancelled",
+                        &[("done", done_str.as_str()), ("total", total_str.as_str())]
+                    )
+                );
+                state.set_status(&state.t("status.typing_cancelled"));
+            } else if let Err(e) = result {
                 let err = e.to_string();
                 error!("{}", state.tr("log.input_error", &[("err", err.as_str())]));
                 state.set_status(&state.tr("status.input_error", &[("err", err.as_str())]));
@@ -403,10 +521,29 @@ impl SharedState {
                 info!("{}", state.t("log.input_complete"));
                 state.set_status(&state.t("status.input_complete"));
             }
-
-            *state.typing_paused.lock().unwrap() = false;
-            *state.is_typing.lock().unwrap() = false;
         });
+    }
+}
+
+/// 输入线程作用域守卫：Drop 时复位所有输入标志，保证线程以任何方式
+/// （正常结束/提前 return/panic）退出后状态一致，不会永久卡在“输入中”。
+struct TypingGuard {
+    state: SharedState,
+}
+
+impl TypingGuard {
+    fn new(state: SharedState) -> Self {
+        Self { state }
+    }
+}
+
+impl Drop for TypingGuard {
+    fn drop(&mut self) {
+        *lock(&self.state.typing_paused) = false;
+        *lock(&self.state.is_typing) = false;
+        self.state.typing_cancelled.store(false, Ordering::SeqCst);
+        *lock(&self.state.typing_progress) = (0, 0);
+        self.state.request_repaint();
     }
 }
 
@@ -418,8 +555,6 @@ struct CopyTypeApp {
     i18n: I18n,
     /// 快捷键管理器
     hotkey_manager: Option<GlobalHotKeyManager>,
-    /// 当前快捷键 ID
-    current_hotkey_id: Option<u32>,
     /// 当前已注册的快捷键
     current_hotkey: Option<HotKey>,
     /// 快捷键配置
@@ -445,7 +580,6 @@ struct CopyTypeApp {
     /// 权限状态
     permission_status: PermissionStatus,
     /// 系统托盘上下文，必须保持活跃
-    #[allow(dead_code)]
     tray_context: Option<TrayContext>,
     /// 托盘是否实际可用（Linux 上由 GTK 线程异步置位）。
     /// 用于关闭/最小化时避免“窗口隐藏后没有托盘可恢复”。
@@ -456,17 +590,21 @@ struct CopyTypeApp {
     /// 启动最小化的等待帧数预算（Linux）
     #[cfg(target_os = "linux")]
     startup_minimize_frames: u32,
+    /// 预览缓存对应的暂存文本（Arc 指针判等），内容/格式变化时重建缓存
+    preview_source: Option<Arc<str>>,
+    /// 预览缓存对应的格式模式
+    preview_format: TypingFormat,
+    /// 截断后的预览文本（经 typing_format 变换，与实际输入一致）
+    preview_text: String,
+    /// 待输入文本统计（字符数, 行数），随预览缓存一起更新
+    preview_stats: (usize, usize),
 }
 
 /// 保持托盘及其菜单项存活的结构体
 struct TrayContext {
-    #[allow(dead_code)]
     tray: TrayIcon,
-    #[allow(dead_code)]
     show_item: MenuItem,
-    #[allow(dead_code)]
     toggle_item: MenuItem,
-    #[allow(dead_code)]
     exit_item: MenuItem,
     #[allow(dead_code)]
     separator: PredefinedMenuItem,
@@ -493,12 +631,13 @@ impl CopyTypeApp {
 
         // 创建共享状态
         let state = SharedState::new(i18n.clone());
+        state.set_repaint_ctx(cc.egui_ctx.clone());
         // 初始化 state 中的配置值
-        *state.typing_delay.lock().unwrap() = app_config.typing_delay;
-        *state.typing_variance.lock().unwrap() = app_config.typing_variance;
-        *state.typing_format.lock().unwrap() = app_config.typing_format;
-        *state.history_enabled.lock().unwrap() = app_config.history_enabled;
-        *state.history_max_items.lock().unwrap() = app_config.history_max_items;
+        *lock(&state.typing_delay) = app_config.typing_delay;
+        *lock(&state.typing_variance) = app_config.typing_variance;
+        *lock(&state.typing_format) = app_config.typing_format;
+        *lock(&state.history_enabled) = app_config.history_enabled;
+        *lock(&state.history_max_items) = app_config.history_max_items;
 
         // 根据配置显示/隐藏控制台
         #[cfg(target_os = "windows")]
@@ -558,7 +697,6 @@ impl CopyTypeApp {
                         }
                         MENU_SHOW => {
                             info!("{}", i18n_tray.t("log.tray_exec_show"));
-                            tray_state.window_visible.store(true, Ordering::SeqCst);
                             show_main_window(&ctx_clone, window_hwnd);
                         }
                         MENU_TOGGLE => {
@@ -597,7 +735,7 @@ impl CopyTypeApp {
             let receiver = GlobalHotKeyEvent::receiver();
             loop {
                 if let Ok(event) = receiver.recv() {
-                    let current_id = *hotkey_state.hotkey_id.lock().unwrap();
+                    let current_id = *lock(&hotkey_state.hotkey_id);
                     if let Some(id) = current_id {
                         if event.id == id {
                             if !hotkey_state.should_handle_hotkey() {
@@ -625,7 +763,6 @@ impl CopyTypeApp {
             state,
             i18n: i18n.clone(),
             hotkey_manager: None,
-            current_hotkey_id: None,
             current_hotkey: None,
             hotkey_config: hotkey_config.clone(),
             temp_hotkey_config: hotkey_config,
@@ -644,6 +781,10 @@ impl CopyTypeApp {
             pending_minimize: false,
             #[cfg(target_os = "linux")]
             startup_minimize_frames: 0,
+            preview_source: None,
+            preview_format: TypingFormat::Raw,
+            preview_text: String::new(),
+            preview_stats: (0, 0),
         };
 
         // 初始化快捷键
@@ -657,7 +798,6 @@ impl CopyTypeApp {
             #[cfg(not(target_os = "linux"))]
             {
                 if app.tray_available.load(Ordering::SeqCst) {
-                    app.state.window_visible.store(false, Ordering::SeqCst);
                     cc.egui_ctx
                         .send_viewport_cmd(egui::ViewportCommand::Visible(false));
                 } else {
@@ -681,9 +821,8 @@ impl CopyTypeApp {
                 if let Some(hotkey) = self.hotkey_config.to_global_hotkey() {
                     match manager.register(hotkey) {
                         Ok(()) => {
-                            self.current_hotkey_id = Some(hotkey.id());
                             self.current_hotkey = Some(hotkey);
-                            *self.state.hotkey_id.lock().unwrap() = Some(hotkey.id());
+                            *lock(&self.state.hotkey_id) = Some(hotkey.id());
                             let display = self.hotkey_config.display();
                             info!(
                                 "{}",
@@ -771,9 +910,8 @@ impl CopyTypeApp {
 
                         // 更新配置
                         self.hotkey_config = self.temp_hotkey_config.clone();
-                        self.current_hotkey_id = Some(new_hotkey.id());
                         self.current_hotkey = Some(new_hotkey);
-                        *self.state.hotkey_id.lock().unwrap() = Some(new_hotkey.id());
+                        *lock(&self.state.hotkey_id) = Some(new_hotkey.id());
                         
                         let display = self.hotkey_config.display();
                         info!(
@@ -839,26 +977,36 @@ impl CopyTypeApp {
 
             info!("{}", state.t("log.clipboard_monitor_started"));
 
+            // Windows：剪贴板序号是系统级计数器，每次剪贴板变化（包括
+            // 重复复制相同内容）都会递增，比逐次取文本比对更省也更准确。
+            #[cfg(target_os = "windows")]
+            let mut last_seq = clipboard_sequence_number();
+
             loop {
                 // 只在启用时监控
                 if state.is_enabled() {
-                    if let Ok(text) = clipboard.get_text() {
-                        let last = state.last_clipboard_text.lock().unwrap().clone();
-
-                        if text != last && !text.is_empty() {
-                            let len_str = text.len().to_string();
-                            info!(
-                                "{}",
-                                state.tr("log.clipboard_changed", &[("len", len_str.as_str())])
-                            );
-                            
-                            // truncate_text 已按字符边界安全截断
-                            let preview = truncate_text(&text, 50);
-                            debug!("{}", state.tr("log.clipboard_preview", &[("preview", preview.as_str())]));
-
-                            *state.clipboard_text.lock().unwrap() = text.clone();
-                            *state.last_clipboard_text.lock().unwrap() = text.clone();
-                            state.record_history(text);
+                    #[cfg(target_os = "windows")]
+                    {
+                        let seq = clipboard_sequence_number();
+                        if seq != last_seq {
+                            match clipboard.get_text() {
+                                Ok(text) if !text.is_empty() => {
+                                    last_seq = seq;
+                                    state.stage_text(text);
+                                }
+                                // 读取失败（如被其他程序占用）或当前不是文本：
+                                // 不消费序号，下个周期重试
+                                _ => {}
+                            }
+                        }
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        if let Ok(text) = clipboard.get_text() {
+                            let last = lock(&state.last_clipboard_text).clone();
+                            if text != last && !text.is_empty() {
+                                state.stage_text(text);
+                            }
                         }
                     }
                 }
@@ -873,34 +1021,45 @@ impl CopyTypeApp {
         self.state.execute_typing();
     }
 
-    /// 处理快捷键事件
-    fn handle_hotkey_events(&self) {
-        // 快捷键事件现在由后台线程处理
-    }
-
 }
 
 impl eframe::App for CopyTypeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let i18n = self.i18n.clone();
-        // 处理快捷键事件
-        self.handle_hotkey_events();
 
-        // 请求持续重绘以处理事件
-        ctx.request_repaint_after(Duration::from_millis(50));
+        // 重绘策略：不做固定频率轮询。后台线程（剪贴板监控/输入/托盘事件）
+        // 在状态变化时通过 SharedState::request_repaint 唤醒 UI；
+        // 输入中的 spinner 动画也会自行请求重绘。
 
         // Linux：等待托盘就绪后再执行“启动最小化”，避免托盘还没建好就把窗口藏了导致无法恢复。
         #[cfg(target_os = "linux")]
         if self.pending_minimize {
+            // 仅在等待托盘期间才周期重绘
+            ctx.request_repaint_after(Duration::from_millis(50));
             self.startup_minimize_frames += 1;
             if self.tray_available.load(Ordering::SeqCst) {
-                self.state.window_visible.store(false, Ordering::SeqCst);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                 self.pending_minimize = false;
             } else if self.startup_minimize_frames > 40 {
                 warn!("Tray did not become available; keeping the window visible.");
                 self.pending_minimize = false;
             }
+        }
+
+        // 待输入文本预览缓存：仅在文本或格式模式变化时重建，
+        // 避免每帧对（可能达 10MB 的）全文做格式化和排版。
+        let clipboard_text = self.state.get_clipboard_text();
+        let typing_format = *lock(&self.state.typing_format);
+        let preview_stale = match &self.preview_source {
+            Some(src) => !Arc::ptr_eq(src, &clipboard_text),
+            None => true,
+        } || self.preview_format != typing_format;
+        if preview_stale {
+            let formatted = typing_format.apply(&clipboard_text);
+            self.preview_stats = (formatted.chars().count(), formatted.lines().count());
+            self.preview_text = char_preview(&formatted, PREVIEW_MAX_CHARS);
+            self.preview_source = Some(clipboard_text.clone());
+            self.preview_format = typing_format;
         }
 
         // 权限警告窗口
@@ -980,7 +1139,6 @@ impl eframe::App for CopyTypeApp {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button(i18n.t("ui.menu_file"), |ui| {
                     if ui.button(i18n.t("ui.menu_minimize_to_tray")).clicked() {
-                        self.state.window_visible.store(false, Ordering::SeqCst);
                         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                         ui.close_menu();
                     }
@@ -1024,6 +1182,15 @@ impl eframe::App for CopyTypeApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.state.is_typing() {
                         ui.spinner();
+                        let (done, total) = *lock(&self.state.typing_progress);
+                        if total > 0 {
+                            let done_str = done.to_string();
+                            let total_str = total.to_string();
+                            ui.label(i18n.tr(
+                                "status.typing_progress",
+                                &[("done", done_str.as_str()), ("total", total_str.as_str())],
+                            ));
+                        }
                     }
                     // 权限状态指示
                     if !self.permission_status.all_granted() {
@@ -1079,20 +1246,20 @@ impl eframe::App for CopyTypeApp {
             ui.separator();
             ui.add_space(10.0);
 
-            // 剪贴板内容预览
-            let clipboard_text = self.state.get_clipboard_text();
-            let history_enabled = *self.state.history_enabled.lock().unwrap();
+            // 剪贴板内容预览（clipboard_text/preview_text 均来自上方缓存逻辑）
+            let history_enabled = *lock(&self.state.history_enabled);
 
             if history_enabled {
                 ui.label(i18n.t("ui.label_history_list"));
                 egui::ScrollArea::vertical()
                     .max_height(200.0)
                     .show(ui, |ui| {
-                        let history = self.state.clipboard_history.lock().unwrap();
+                        let history = lock(&self.state.clipboard_history);
                         if history.is_empty() {
                             ui.label(egui::RichText::new(i18n.t("ui.label_empty")).italics().weak());
                         } else {
                             let history_len = history.len();
+                            let mut load_item: Option<String> = None;
                             for (index, item) in history.iter().rev().enumerate() {
                                 egui::Frame::none()
                                     .fill(ui.style().visuals.extreme_bg_color)
@@ -1105,11 +1272,24 @@ impl eframe::App for CopyTypeApp {
                                             &[("time", item.copied_at.as_str())],
                                         );
                                         ui.label(egui::RichText::new(time_label).small().weak());
-                                        ui.label(&item.text);
+                                        let resp = ui
+                                            .add(
+                                                egui::Label::new(&item.preview)
+                                                    .sense(egui::Sense::click()),
+                                            )
+                                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                            .on_hover_text(i18n.t("ui.history_click_hint"));
+                                        if resp.clicked() {
+                                            load_item = Some(item.text.clone());
+                                        }
                                     });
                                 if index + 1 < history_len {
                                     ui.add_space(6.0);
                                 }
+                            }
+                            if let Some(text) = load_item {
+                                self.state.stage_from_history(text);
+                                self.state.set_status(&i18n.t("status.loaded_from_history"));
                             }
                         }
                     });
@@ -1127,7 +1307,7 @@ impl eframe::App for CopyTypeApp {
                                 if clipboard_text.is_empty() {
                                     ui.label(egui::RichText::new(i18n.t("ui.label_empty")).italics().weak());
                                 } else {
-                                    ui.label(&clipboard_text);
+                                    ui.label(&self.preview_text);
                                 }
                             });
                     });
@@ -1135,11 +1315,11 @@ impl eframe::App for CopyTypeApp {
 
             ui.add_space(10.0);
 
-            // 文本信息
+            // 文本信息（统计的是经格式处理后的待输入文本）
             if !clipboard_text.is_empty() {
                 ui.horizontal(|ui| {
-                    let char_count = clipboard_text.chars().count().to_string();
-                    let line_count = clipboard_text.lines().count().to_string();
+                    let char_count = self.preview_stats.0.to_string();
+                    let line_count = self.preview_stats.1.to_string();
                     ui.label(i18n.tr("ui.label_char_count", &[("count", char_count.as_str())]));
                     ui.label(i18n.tr("ui.label_line_count", &[("count", line_count.as_str())]));
                 });
@@ -1147,7 +1327,7 @@ impl eframe::App for CopyTypeApp {
 
             ui.add_space(10.0);
 
-            // 手动触发按钮
+            // 手动触发 / 停止 / 清空按钮
             ui.horizontal(|ui| {
                 let typing = self.state.is_typing();
                 let enabled = self.state.is_enabled();
@@ -1162,8 +1342,12 @@ impl eframe::App for CopyTypeApp {
                     self.type_text();
                 }
 
+                if typing && ui.button(i18n.t("ui.button_stop")).clicked() {
+                    self.state.cancel_typing();
+                }
+
                 if ui.button(i18n.t("ui.button_clear")).clicked() {
-                    *self.state.clipboard_text.lock().unwrap() = String::new();
+                    *lock(&self.state.clipboard_text) = Arc::from("");
                     self.state.set_status(&i18n.t("status.cleared"));
                 }
             });
@@ -1449,18 +1633,27 @@ impl eframe::App for CopyTypeApp {
                             
                             self.app_config = self.temp_app_config.clone();
                             // 更新 state 中的配置
-                            *self.state.typing_delay.lock().unwrap() = self.app_config.typing_delay;
-                            *self.state.typing_variance.lock().unwrap() = self.app_config.typing_variance;
-                            *self.state.typing_format.lock().unwrap() = self.app_config.typing_format;
-                            *self.state.history_enabled.lock().unwrap() = self.app_config.history_enabled;
-                            *self.state.history_max_items.lock().unwrap() = self.app_config.history_max_items;
+                            *lock(&self.state.typing_delay) = self.app_config.typing_delay;
+                            *lock(&self.state.typing_variance) = self.app_config.typing_variance;
+                            *lock(&self.state.typing_format) = self.app_config.typing_format;
+                            *lock(&self.state.history_enabled) = self.app_config.history_enabled;
+                            *lock(&self.state.history_max_items) = self.app_config.history_max_items;
                             if self.app_config.history_enabled {
                                 self.state.trim_history();
                             } else {
                                 self.state.clear_history();
                             }
                             self.i18n.set_language(&self.app_config.language);
-                            
+
+                            // 托盘菜单文本随界面语言刷新（Linux 上托盘在 GTK
+                            // 线程内独立持有，tray_context 为 None，自动跳过）
+                            if let Some(tray) = &self.tray_context {
+                                tray.show_item.set_text(self.i18n.t("tray.menu_show"));
+                                tray.toggle_item.set_text(self.i18n.t("tray.menu_toggle"));
+                                tray.exit_item.set_text(self.i18n.t("tray.menu_exit"));
+                                let _ = tray.tray.set_tooltip(Some(self.i18n.t("tray.tooltip")));
+                            }
+
                             // 保存时包含当前的快捷键配置
                             self.app_config.hotkey = self.hotkey_config.clone();
                             if let Err(e) = self.app_config.save() {
@@ -1492,7 +1685,6 @@ impl eframe::App for CopyTypeApp {
             if minimize {
                 // 取消关闭，改为隐藏
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.state.window_visible.store(false, Ordering::SeqCst);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                 info!("{}", i18n.t("log.window_minimized_to_tray"));
             } else {
@@ -1897,7 +2089,7 @@ fn spawn_linux_tray(i18n: I18n, tray_available: Arc<AtomicBool>) {
 }
 
 
-/// 截断文本用于日志显示
+/// 截断文本用于日志显示（转义换行，按字符边界截断）
 fn truncate_text(text: &str, max_len: usize) -> String {
     if text.len() <= max_len {
         text.replace('\n', "\\n").replace('\r', "\\r")
@@ -1908,7 +2100,7 @@ fn truncate_text(text: &str, max_len: usize) -> String {
             .last()
             .map(|(idx, ch)| idx + ch.len_utf8())
             .unwrap_or(0);
-        
+
         format!(
             "{}...",
             text[..truncate_pos].replace('\n', "\\n").replace('\r', "\\r")
@@ -1916,19 +2108,136 @@ fn truncate_text(text: &str, max_len: usize) -> String {
     }
 }
 
+/// 按字符数截断文本用于 UI 预览（不转义，超出部分以省略号收尾）
+fn char_preview(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let preview: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{}…", preview)
+    } else {
+        preview
+    }
+}
+
+/// Windows: 读取系统剪贴板序号，剪贴板内容每次变化（含重复复制相同文本）都会递增
+#[cfg(target_os = "windows")]
+fn clipboard_sequence_number() -> u32 {
+    use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
+    unsafe { GetClipboardSequenceNumber() }
+}
+
 fn format_history_timestamp() -> String {
     Local::now().format("%H:%M:%S").to_string()
 }
 
-fn main() -> eframe::Result<()> {
-    // 初始化日志
+/// 同时写 stderr 和日志文件的 Writer
+struct TeeWriter {
+    file: Option<std::fs::File>,
+}
+
+impl Write for TeeWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let _ = std::io::stderr().write(buf);
+        if let Some(f) = &mut self.file {
+            let _ = f.write(buf);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let _ = std::io::stderr().flush();
+        if let Some(f) = &mut self.file {
+            let _ = f.flush();
+        }
+        Ok(())
+    }
+}
+
+/// 打开日志文件；超过 LOG_FILE_MAX_BYTES 时轮转为 copy-type.old.log
+fn open_log_file() -> Option<std::fs::File> {
+    let dir = dirs::config_dir()?.join("copy-type").join("logs");
+    std::fs::create_dir_all(&dir).ok()?;
+    let log_path = dir.join("copy-type.log");
+    if let Ok(meta) = std::fs::metadata(&log_path) {
+        if meta.len() > LOG_FILE_MAX_BYTES {
+            let old_path = dir.join("copy-type.old.log");
+            let _ = std::fs::remove_file(&old_path);
+            let _ = std::fs::rename(&log_path, &old_path);
+        }
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .ok()
+}
+
+fn init_logger() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_secs()
+        .target(env_logger::Target::Pipe(Box::new(TeeWriter {
+            file: open_log_file(),
+        })))
         .init();
+}
 
-    info!("=================================");
+/// 单实例锁：配置目录下对 instance.lock 取 OS 级文件锁，
+/// 进程退出（含崩溃）时锁自动释放。返回的 File 需保持存活。
+fn acquire_single_instance_lock() -> Option<std::fs::File> {
+    let dir = dirs::config_dir()?.join("copy-type");
+    std::fs::create_dir_all(&dir).ok()?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("instance.lock"))
+        .ok()?;
+    match file.try_lock() {
+        Ok(()) => Some(file),
+        Err(std::fs::TryLockError::WouldBlock) => None,
+        // 锁机制不可用时放行，避免误伤正常启动
+        Err(_) => Some(file),
+    }
+}
+
+/// Windows: 弹系统消息框提示已有实例在运行（release 版无控制台，不能靠日志）
+#[cfg(target_os = "windows")]
+fn show_already_running_message(title: &str, body: &str) {
+    use windows::core::HSTRING;
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
+    unsafe {
+        MessageBoxW(
+            None,
+            &HSTRING::from(body),
+            &HSTRING::from(title),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
+}
+
+fn main() -> eframe::Result<()> {
+    // 初始化日志（stderr + 文件，文件超过 2MB 自动轮转）
+    init_logger();
+
     let startup_config = AppConfig::load();
     let startup_i18n = I18n::new(&startup_config.language);
+
+    // 单实例检查：第二个实例提示后直接退出
+    let _instance_lock = match acquire_single_instance_lock() {
+        Some(f) => f,
+        None => {
+            warn!("{}", startup_i18n.t("log.instance_already_running"));
+            #[cfg(target_os = "windows")]
+            show_already_running_message(
+                &startup_i18n.t("ui.title_main"),
+                &startup_i18n.t("ui.instance_already_running"),
+            );
+            std::process::exit(1);
+        }
+    };
+
+    info!("=================================");
     info!("  {}", startup_i18n.t("ui.title_main"));
     info!("=================================");
 
