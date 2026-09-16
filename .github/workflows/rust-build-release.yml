@@ -39,18 +39,15 @@ jobs:
             asset_name: copy-type-macos-aarch64.zip
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
+    # setup-rust-toolchain 内置 Swatinem/rust-cache，按 target 分缓存
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
         toolchain: stable
         target: ${{ matrix.target }}
-
-    - name: Cache cargo artifacts
-      uses: Swatinem/rust-cache@v2
-      with:
-        key: ${{ matrix.target }}
+        cache-key: ${{ matrix.target }}
 
     - name: Install Linux build deps
       if: matrix.os == 'ubuntu-latest'
@@ -135,7 +132,7 @@ jobs:
         sha256sum "${{ matrix.asset_name }}" > "${{ matrix.asset_name }}.sha256"
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: ${{ matrix.asset_name }}
         path: artifacts/${{ matrix.asset_name }}*
@@ -150,11 +147,11 @@ jobs:
       contents: write
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     # 下载所有构建好的文件
     - name: Download all artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         path: artifacts
         pattern: '*'
@@ -165,7 +162,7 @@ jobs:
 
     # 将文件上传到 Release 页面；tag 推送触发时若 Release 不存在会自动创建
     - name: Upload to Release
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@v3
       with:
         files: artifacts/*
         generate_release_notes: true

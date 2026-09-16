@@ -26,18 +26,15 @@ jobs:
             target: aarch64-apple-darwin
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
+    # setup-rust-toolchain 内置 Swatinem/rust-cache，按 target 分缓存
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
         toolchain: stable
         target: ${{ matrix.target }}
-
-    - name: Cache cargo artifacts
-      uses: Swatinem/rust-cache@v2
-      with:
-        key: ${{ matrix.target }}
+        cache-key: ${{ matrix.target }}
 
     - name: Install Linux build deps
       if: matrix.os == 'ubuntu-latest'
